@@ -1,0 +1,1 @@
+Builds a database of card metadata + hashes and stores them in an efficient database for retrieval.

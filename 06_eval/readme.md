@@ -1,0 +1,1 @@
+Test and evaluation scripts that are used for comparing the performance of various detectors, vectorizors, and database lookup methods.
