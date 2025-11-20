@@ -36,7 +36,8 @@ def test_phash_build_gallery():
     """Test gallery building"""
     model = PHashModel()
     
-    images = [create_test_image(f"color{i}") for i in range(5)]
+    colors = ["red", "green", "blue", "yellow", "white"]
+    images = [create_test_image(color) for color in colors]
     ids = [f"card_{i}" for i in range(5)]
     
     model.build_gallery(images, ids)
@@ -74,12 +75,14 @@ def test_phash_similarity_matrix():
     model = PHashModel()
     
     # Create gallery
-    gallery_images = [create_test_image(f"color{i}") for i in range(5)]
+    gallery_colors = ["red", "green", "blue", "yellow", "white"]
+    gallery_images = [create_test_image(color) for color in gallery_colors]
     gallery_ids = [f"card_{i}" for i in range(5)]
     model.build_gallery(gallery_images, gallery_ids)
     
     # Create queries
-    query_images = [create_test_image(f"color{i}") for i in range(3)]
+    query_colors = ["red", "green", "blue"]
+    query_images = [create_test_image(color) for color in query_colors]
     
     # Compute similarity matrix
     sim_matrix = model.compute_similarity_matrix(query_images)
