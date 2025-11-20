@@ -88,4 +88,70 @@ import requests
 
 bulkdata_type = "all_cards"
 
+import json
+from datetime import datetime
+import datetime as dt
+
+def sync_scryfall_bulkdata():
+  """
+  Checks Scryfall bulk-data endpoint for the latest 'all_cards' file.
+  Downloads it if newer than local cache or if cache is missing.
+  Returns True if a new file was downloaded, False otherwise.
+  """
+  API_URL = "https://api.scryfall.com/bulk-data"
+  CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
+  CACHE_PATH = os.path.join(CACHE_DIR, f"{bulkdata_type}.json")
+
+  # Get bulk data metadata from Scryfall
+  resp = requests.get(API_URL)
+  resp.raise_for_status()
+  data = resp.json()
+  bulk_entry = None
+  for entry in data.get("data", []):
+    if entry.get("type") == bulkdata_type:
+      bulk_entry = entry
+      break
+  if not bulk_entry:
+    raise RuntimeError(f"Could not find bulk data type '{bulkdata_type}' in Scryfall response.")
+
+  remote_updated_at = bulk_entry["updated_at"]
+  remote_updated_dt = datetime.fromisoformat(remote_updated_at.replace("Z", "+00:00"))
+  download_url = bulk_entry["download_uri"]
+
+  print(f"Remote data updated at: {remote_updated_dt.isoformat()}")
+  
+  # Check local cache
+  need_download = False
+  if not os.path.exists(CACHE_PATH):
+    print(f"Local cache not found: {CACHE_PATH}")
+    need_download = True
+  else:
+    # Make local_mtime timezone-aware (UTC) using recommended method
+    local_mtime = datetime.fromtimestamp(os.path.getmtime(CACHE_PATH), tz=dt.UTC)
+    print(f"Local cache updated at: {local_mtime.isoformat()}")
+    # Compare remote updated_at to local file mtime
+    if remote_updated_dt > local_mtime:
+      need_download = True
+
+  if need_download:
+    # Ensure cache directory exists
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    print(f"Downloading new {bulkdata_type} data from Scryfall...")
+    with requests.get(download_url, stream=True) as r:
+      r.raise_for_status()
+      with open(CACHE_PATH, "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+          f.write(chunk)
+    # Update mtime to match remote updated_at
+    mtime = remote_updated_dt.timestamp()
+    os.utime(CACHE_PATH, (mtime, mtime))
+    return True
+  else:
+    print(f"Local cache is up to date: {CACHE_PATH}")
+    return False
+
+if __name__ == "__main__":
+  changed = sync_scryfall_bulkdata()
+  print(f"Data updated: {changed}")
+
 
