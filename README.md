@@ -2,14 +2,40 @@
 
 Computer vision dataset and library for visual recognition of collectible cards (such as Magic: The Gathering, Pokemon, Yu-Gi-Oh!, and more).
 
-## Overview
+Represents the entire pipeline, from data gathering and cleaning, to card detection (finding the location of a card in an image), to card vectorization, and finally, to card lookup.
 
-This repository provides:
+Data is cached in each step, and scripts are intended to be run once, in sequence, and then re-run later to update with the latest data available (such as when new sets are printed, or when new real-life camera images are available and added).
 
-1. **Dataset Management**: Scripts to download and manage collectible card datasets from APIs like Scryfall (Magic: The Gathering) and pokemontcg.io (Pokemon TCG)
-2. **Benchmark Tasks**: MIEB (Multimodal Image Embedding Benchmark) compatible tasks for evaluating card recognition models
-3. **Baseline Models**: Implementations of pHash and DINOv2 for card recognition
-4. **Fine-tuning**: Scripts to fine-tune DINOv2 on card datasets for improved performance
+Each script should check the dates of each piece of data downloaded or calculated, and only redownload / recalculate if our cached data is missing or outdated.
+
+In this way, we can run the full pipeline of scripts on a nightly basis, and only have to spend time on a minimum of recalculation and download.
+
+## Project Structure
+
+```
+01_data_sources/    # Data gathering from APIs
+  ├── scryfall/     # Magic: The Gathering (Scryfall API)
+  │   ├── 01_sync_data.py     # Download bulk card data
+  │   ├── 02_sync_images.py   # Download card images
+  │   └── 03_prioritize_data.py  # Prioritize cards by ambiguity
+  └── pokemontcgio/ # Pokemon TCG (pokemontcg.io API)
+      ├── 01_sync_data.py     # Download Pokemon card data
+      └── 02_sync_images.py   # Download Pokemon images
+
+02_data_sets/       # Curated datasets for training/evaluation
+
+03_detector/        # Card detection in images
+
+04_vectorize/       # Convert card images to vectors
+  ├── phash/        # Perceptual hash baseline
+  ├── dinov2/       # DINOv2 transformer model
+  └── brief/        # BRIEF descriptor
+
+05_build/           # Build vector databases
+
+06_eval/            # Evaluation and benchmarking
+  └── 01_eval_retrieval.py  # Retrieval performance evaluation
+```
 
 ## Installation
 
@@ -20,179 +46,89 @@ cd ccg_card_id
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Or install in development mode
-pip install -e .
 ```
 
-## Quick Start
+## Usage Pipeline
 
-### 1. Download Datasets
+### Step 1: Sync Data from APIs
 
-Download sample datasets for Magic: The Gathering and/or Pokemon TCG:
+Download card metadata and images from Scryfall (Magic: The Gathering):
 
 ```bash
-# Download both MTG and Pokemon datasets (1000 cards each)
-python scripts/download_dataset.py --game both --num-cards 1000 --create-splits
-
-# Download only MTG dataset
-python scripts/download_dataset.py --game mtg --num-cards 500
-
-# Download Pokemon dataset with API key (for higher rate limits)
-python scripts/download_dataset.py --game pokemon --num-cards 2000 --pokemon-api-key YOUR_API_KEY
+cd 01_data_sources/scryfall
+python 01_sync_data.py    # Downloads bulk card data
+python 02_sync_images.py  # Downloads card images
 ```
 
-### 2. Test Baseline Models
-
-#### Test pHash Baseline
+Download Pokemon TCG cards:
 
 ```bash
-# Test pHash on MTG retrieval task
-python scripts/test_phash.py --game mtg --num-queries 100
+cd 01_data_sources/pokemontcgio
+python 01_sync_data.py    # Downloads Pokemon card data
+python 02_sync_images.py  # Downloads Pokemon images
 
-# Test with custom hash size
-python scripts/test_phash.py --game pokemon --hash-size 16 --num-queries 200
+# Optional: Set API key for higher rate limits
+export POKEMON_TCG_API_KEY=your_key_here
+python 01_sync_data.py
 ```
 
-#### Test DINOv2 Baseline
+### Step 2: Build Vectors
+
+Generate perceptual hash vectors:
 
 ```bash
-# Test DINOv2 on MTG retrieval task
-python scripts/test_dinov2.py --game mtg --num-queries 100
-
-# Test with custom model and batch size
-python scripts/test_dinov2.py --game pokemon --model-name facebook/dinov2-large --batch-size 64
+cd 04_vectorize/phash
+python 01_build_vectors.py
 ```
 
-### 3. Fine-tune DINOv2
-
-Fine-tune DINOv2 on your card dataset for improved performance:
+Generate DINOv2 embeddings (requires GPU for best performance):
 
 ```bash
-# Fine-tune on MTG dataset
-python scripts/finetune_dinov2.py --game mtg --epochs 10 --batch-size 16
-
-# Fine-tune with custom learning rate
-python scripts/finetune_dinov2.py --game pokemon --epochs 20 --lr 5e-6
+cd 04_vectorize/dinov2
+python 01_build_vectors.py
 ```
 
-## Project Structure
+### Step 3: Evaluate Performance
 
-```
-ccg_card_id/
-├── ccg_card_id/           # Main package
-│   ├── dataset/           # Dataset fetching and management
-│   │   ├── scryfall_fetcher.py    # MTG/Scryfall API
-│   │   ├── pokemon_fetcher.py     # Pokemon TCG API
-│   │   └── dataset_manager.py     # Dataset management
-│   ├── benchmark/         # MIEB benchmark tasks
-│   │   └── tasks.py      # Card matching, retrieval, classification
-│   ├── models/           # Model implementations
-│   │   ├── phash_model.py        # pHash baseline
-│   │   └── dinov2_model.py       # DINOv2 model
-│   └── utils/            # Utility functions
-│       ├── image_utils.py        # Image processing
-│       └── metrics.py            # Evaluation metrics
-├── scripts/              # Executable scripts
-│   ├── download_dataset.py       # Download datasets
-│   ├── test_phash.py            # Test pHash baseline
-│   ├── test_dinov2.py           # Test DINOv2 baseline
-│   └── finetune_dinov2.py       # Fine-tune DINOv2
-├── data/                 # Data storage (created on first run)
-│   ├── raw/             # Raw metadata
-│   ├── processed/       # Processed data and splits
-│   └── images/          # Card images
-└── tests/               # Unit tests
+Compare retrieval performance of different vectorizers:
 
+```bash
+cd 06_eval
+python 01_eval_retrieval.py
 ```
 
-## Benchmark Tasks
+## Dependencies
 
-The repository includes three MIEB-compatible benchmark tasks:
+- **requests**: API calls
+- **tqdm**: Progress bars
+- **orjson** (optional): Faster JSON parsing
+- **Pillow**: Image processing
+- **imagehash**: Perceptual hashing
+- **torch**: Deep learning framework
+- **transformers**: DINOv2 model
+- **numpy**: Numerical computations
 
-1. **Card Matching**: Given two card images, determine if they represent the same card
-2. **Card Retrieval**: Given a query card image, retrieve similar cards from a gallery
-3. **Card Classification**: Classify cards by attributes (rarity, type, etc.)
+Install all dependencies:
 
-## API Documentation
-
-### Dataset Fetchers
-
-#### Scryfall Fetcher (Magic: The Gathering)
-
-```python
-from ccg_card_id.dataset import ScryfallFetcher
-
-fetcher = ScryfallFetcher(data_dir="data")
-
-# Fetch sample dataset
-cards = fetcher.fetch_sample_dataset(num_cards=1000)
-
-# Fetch specific set
-cards = fetcher.fetch_specific_set(set_code="mid")
-
-# Download images
-fetcher.download_card_images(cards)
-
-# Save metadata
-fetcher.save_metadata(cards)
+```bash
+pip install requests tqdm pillow imagehash torch transformers numpy
 ```
 
-#### Pokemon Fetcher
+## Data Flow
 
-```python
-from ccg_card_id.dataset import PokemonFetcher
+1. **Data Sources** → Download raw card data and images from APIs
+2. **Data Sets** → Process and organize data into training/test splits
+3. **Vectorize** → Convert card images into fixed-length vectors
+4. **Build** → Create searchable vector databases
+5. **Eval** → Benchmark and compare different methods
 
-fetcher = PokemonFetcher(data_dir="data", api_key="optional_api_key")
+## Features
 
-# Fetch sample dataset
-cards = fetcher.fetch_sample_dataset(num_cards=1000)
-
-# Download images
-fetcher.download_card_images(cards)
-```
-
-### Models
-
-#### pHash Model
-
-```python
-from ccg_card_id.models import PHashModel
-from PIL import Image
-
-model = PHashModel(hash_size=8)
-
-# Build gallery
-gallery_images = [Image.open(f"card_{i}.jpg") for i in range(100)]
-gallery_ids = [f"card_{i}" for i in range(100)]
-model.build_gallery(gallery_images, gallery_ids)
-
-# Find matches
-query_image = Image.open("query.jpg")
-matches = model.find_matches(query_image, top_k=5)
-```
-
-#### DINOv2 Model
-
-```python
-from ccg_card_id.models import DINOv2Model
-from PIL import Image
-
-model = DINOv2Model(model_name="facebook/dinov2-base")
-
-# Build gallery
-gallery_images = [Image.open(f"card_{i}.jpg") for i in range(100)]
-gallery_ids = [f"card_{i}" for i in range(100)]
-model.build_gallery(gallery_images, gallery_ids)
-
-# Find matches
-query_image = Image.open("query.jpg")
-matches = model.find_matches(query_image, top_k=5)
-```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- **Incremental Updates**: Scripts check timestamps and only download/process new data
+- **Multiple Data Sources**: Scryfall (MTG), Pokemon TCG API, extensible to more
+- **Multiple Vectorizers**: pHash (fast), DINOv2 (accurate), BRIEF (efficient)
+- **Evaluation Framework**: Standardized benchmarks for comparing methods
+- **Cache Management**: All downloaded and computed data is cached locally
 
 ## License
 
@@ -201,5 +137,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 - [Scryfall](https://scryfall.com/) for providing the Magic: The Gathering API
-- [Pokemon TCG API](https://pokemontcg.io/) for providing the Pokemon card data
+- [Pokemon TCG API](https://pokemontcg.io/) for providing Pokemon card data
 - [DINOv2](https://github.com/facebookresearch/dinov2) from Meta AI Research

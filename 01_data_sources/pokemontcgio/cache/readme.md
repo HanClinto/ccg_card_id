@@ -1,0 +1,1 @@
+Location of cached data files from "pokemontcgio" data source provider.

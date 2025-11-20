@@ -1,0 +1,1 @@
+Vectorizor for phash algorithm

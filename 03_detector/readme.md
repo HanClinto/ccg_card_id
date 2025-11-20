@@ -1,0 +1,1 @@
+Detectors are used to detect the location of a card within an image and return a normalized / rectified card image (a cropped, "squared-up" image with no perspective warping nor background)

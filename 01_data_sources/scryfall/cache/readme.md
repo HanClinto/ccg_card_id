@@ -1,0 +1,1 @@
+Location of cached data files from "scryfall" data source provider.

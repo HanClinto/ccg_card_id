@@ -1,0 +1,1 @@
+Vectorizors take in a normalized card image and return a fixed-length vector that can be used for nearest-neighbor image recognition and search.
