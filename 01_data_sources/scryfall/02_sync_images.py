@@ -154,6 +154,8 @@ if __name__ == "__main__":
     for illustration_id, cards in sorted_illustration_ids[:top_n]:
         top_illustration_cards.extend(cards)
 
+    print(f' (Total: {len(top_illustration_cards)} cards)')
+
     # Dump top cards to a JSON file for reference
     TOP_CARDS_PATH = os.path.join(CACHE_DIR, f"by_illustration_top_{top_n}.json")
     with open(TOP_CARDS_PATH, "w", encoding="utf-8") as f:
