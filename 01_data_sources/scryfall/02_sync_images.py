@@ -127,17 +127,23 @@ def sync_scryfall_images(cards):
                 elif need_download:
                     # Update tqdm bar instead of printing
                     pbar.set_postfix({"card_id": card_id})
-                    img_resp = requests.get(image_url)
-                    img_resp.raise_for_status()
-                    with open(local_image_path, "wb") as img_file:
-                        img_file.write(img_resp.content)
-                    # Update mtime to match remote timestamp
-                    if remote_dt:
-                        mtime = remote_dt.timestamp()
-                        os.utime(local_image_path, (mtime, mtime))
+                    try:
+                        img_resp = requests.get(image_url)
+                        img_resp.raise_for_status()
+                        with open(local_image_path, "wb") as img_file:
+                            img_file.write(img_resp.content)
+                        # Update mtime to match remote timestamp
+                        if remote_dt:
+                            mtime = remote_dt.timestamp()
+                            os.utime(local_image_path, (mtime, mtime))
+                    except Exception as e:
+                        pbar.write(f"Error downloading image for card {card_id} from {image_url}: {e}")
 
 if __name__ == "__main__":
     bulk_data = load_bulk_data()
+
+    sync_scryfall_images(bulk_data)
+    raise SystemExit("Image sync complete.")
 
     scryfall_cards_by_oracle_id, scryfall_cards_by_illustration_id = prioritize_cards(bulk_data)
 

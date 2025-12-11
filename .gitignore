@@ -1,3 +1,10 @@
+# Project-specific files
+# Ignore "cache" folders
+cache/
+
+# Ignore PNG image files
+*.png
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

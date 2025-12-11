@@ -1,3 +1,5 @@
 tqdm
 requests
 orjson
+opencv-contrib-python
+imagehash

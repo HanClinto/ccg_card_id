@@ -139,3 +139,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Scryfall](https://scryfall.com/) for providing the Magic: The Gathering API
 - [Pokemon TCG API](https://pokemontcg.io/) for providing Pokemon card data
 - [DINOv2](https://github.com/facebookresearch/dinov2) from Meta AI Research
+
+## References
+
+- https://github.com/Avishyf/Difference_Finder
