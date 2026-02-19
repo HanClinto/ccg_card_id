@@ -72,8 +72,13 @@ class CardSearchDB:
     @classmethod
     def from_phash_json(cls, path: str | Path) -> "CardSearchDB":
         """
-        Load from a JSON file mapping card_id → pHash hex string.
-        Converts hex hashes to flat int arrays for fast Hamming search.
+        Load from a JSON file mapping card_id → perceptual hash hex string.
+
+        Supports any hash size — the file names follow the convention
+        default_cards_{method}_{hash_size}.json where hash_size is the
+        grid dimension (e.g. 64 → 64×64 = 4096 bits per hash).
+
+        Converts hex strings to flat int8 arrays for Hamming search.
         """
         path = Path(path)
         with open(path, "r", encoding="utf-8") as f:
@@ -81,7 +86,7 @@ class CardSearchDB:
 
         card_ids = list(raw.keys())
         arrays = [imagehash.hex_to_hash(h).hash.flatten().astype(np.int8) for h in raw.values()]
-        vectors = np.stack(arrays)  # shape: (n, 64) for 8x8 pHash
+        vectors = np.stack(arrays)  # shape: (n, hash_size²)
         return cls(card_ids, vectors, mode="hamming")
 
     @classmethod
