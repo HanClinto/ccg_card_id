@@ -331,9 +331,13 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             if not row:
                 return "-"
             top_ids = row.get("top_ids", [])
+            top_scores = row.get("top_scores", [])
             pred = top_ids[0] if top_ids else ""
+            pred_score = top_scores[0] if top_scores else None
             p = _front_image_for_id(pred)
-            caption = f"Retrieved: {_label_for_card_id(pred, card_index)}" if pred else "Retrieved: -"
+            base = _label_for_card_id(pred, card_index) if pred else "-"
+            score_txt = f" · score={pred_score}" if pred_score is not None else ""
+            caption = f"Retrieved: {base}{score_txt}"
             img = _img_md(p, reports_root) if p else (pred or "-")
             return f"{img}<br/><sub>{caption}</sub>"
 
@@ -341,8 +345,16 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             if not row:
                 return "-"
             true_id = str(row.get("true_id", ""))
+            top_scores = row.get("top_scores", [])
+            true_rank = row.get("true_rank")
+            exp_score = None
+            if isinstance(true_rank, int) and true_rank >= 1 and true_rank <= len(top_scores):
+                exp_score = top_scores[true_rank - 1]
             p = _front_image_for_id(true_id)
-            caption = f"Expected: {_label_for_card_id(true_id, card_index)}" if true_id else "Expected: -"
+            base = _label_for_card_id(true_id, card_index) if true_id else "-"
+            rank_txt = f" · rank={true_rank}" if true_rank is not None else ""
+            score_txt = f" · score={exp_score}" if exp_score is not None else ""
+            caption = f"Expected: {base}{rank_txt}{score_txt}"
             img = _img_md(p, reports_root) if p else (true_id or "-")
             return f"{img}<br/><sub>{caption}</sub>"
 
