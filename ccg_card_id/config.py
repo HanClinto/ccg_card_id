@@ -20,6 +20,14 @@ Usage:
 import os
 from pathlib import Path
 
+# Official Meta DINOv2 model variants (smallest → largest)
+DINOV2_MODELS: dict[str, str] = {
+    "small": "facebook/dinov2-small",   # ViT-S/14 — 21M params, 384-dim  (default)
+    "base":  "facebook/dinov2-base",    # ViT-B/14 — 86M params, 768-dim
+    "large": "facebook/dinov2-large",   # ViT-L/14 — 307M params, 1024-dim
+    "giant": "facebook/dinov2-giant",   # ViT-G/14 — 1.1B params, 1536-dim
+}
+
 
 def _get_data_dir() -> Path:
     env = os.environ.get("CCG_DATA_DIR")
@@ -44,6 +52,22 @@ class Config:
     # e.g. phash_vectors_file("phash", 64) → default_cards_phash_64.json
     #      phash_vectors_file("whash_db4", 32) → default_cards_whash_db4_32.json
     # ------------------------------------------------------------------
+
+    def dinov2_vectors_file(self, variant: str) -> Path:
+        """
+        Path to a pre-computed DINOv2 embedding file.
+
+        Parameters
+        ----------
+        variant : str
+            Model size name, e.g. "small", "base", "large", "giant"
+
+        Returns
+        -------
+        Path to .npz file (may or may not exist yet)
+        e.g. ~/claw/data/ccg_card_id/default_cards_dinov2_small.npz
+        """
+        return self.data_dir / f"default_cards_dinov2_{variant}.npz"
 
     def vectors_file(self, method: str, hash_size: int) -> Path:
         """

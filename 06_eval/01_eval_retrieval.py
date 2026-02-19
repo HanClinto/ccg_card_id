@@ -18,6 +18,8 @@ Usage:
     python 01_eval_retrieval.py --dataset ~/claw/data/ccg_card_id/datasets/solring
 """
 
+from __future__ import annotations
+
 import argparse
 import re
 import sys
@@ -33,6 +35,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccg_card_id.config import cfg
 from ccg_card_id.search.brute_force import CardSearchDB
+from reporting import make_run_dir, update_central_result_csvs, write_algorithm_markdown, write_failures_jsonl, write_overview_markdown, write_summary_csv, write_summary_json
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -41,6 +44,9 @@ from ccg_card_id.search.brute_force import CardSearchDB
 DEFAULT_DATASET = Path.home() / "claw" / "data" / "ccg_card_id" / "datasets" / "solring"
 DEFAULT_METHODS = ["phash", "whash_db4"]
 DEFAULT_SIZES = [32, 64, 128, 256]
+DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent / "results"
+DEFAULT_WORST_N = 20
+DEFAULT_TOP_K = [1, 3, 10]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,11 +84,15 @@ def hash_image(img_path: Path, method: str, hash_size: int) -> imagehash.ImageHa
 # Eval
 # ---------------------------------------------------------------------------
 
-def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int]) -> dict:
+def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int], top_k: list[int]) -> tuple[dict, list[dict]]:
     """
     Run retrieval eval for each (method, size) combination.
 
-    Returns a dict: {(method, size): {"correct": int, "total": int, "accuracy": float}}
+    Returns
+    -------
+    (results, failures)
+      results: {(method, size): {correct,total,accuracy}}
+      failures: per-image miss rows (for failures.jsonl/reporting)
     """
     test_dir = dataset_dir / "04_data" / "aligned"
     if not test_dir.exists():
@@ -96,9 +106,11 @@ def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int]) -> dict:
           f"{len({extract_card_id(p.name) for p in test_images} - {None})} unique cards.\n")
 
     results = {}
+    failures: list[dict] = []
 
     for method in methods:
         for size in sizes:
+            variant = f"{method}_{size}"
             vectors_path = cfg.vectors_file(method, size)
             if not vectors_path.exists():
                 print(f"[{method}@{size}] Skipping — vector file not found: {vectors_path}")
@@ -109,9 +121,10 @@ def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int]) -> dict:
             db = CardSearchDB.from_phash_json(vectors_path)
             print(f"[{method}@{size}] Loaded {len(db):,} cards in {time.time()-t0:.1f}s")
 
-            correct = 0
+            max_k = max(top_k)
+            correct_by_k = {k: 0 for k in top_k}
             total = 0
-            failures = []
+            local_failures = []
 
             for img_path in tqdm(test_images, desc=f"{method}@{size}", unit="img"):
                 true_id = extract_card_id(img_path.name)
@@ -123,41 +136,147 @@ def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int]) -> dict:
                     continue
 
                 query_vec = h.hash.flatten().astype(np.int8)
-                results_top1 = db.search(query_vec, k=1)
+                top_results = db.search(query_vec, k=max_k)
+                top_ids = [r.card_id for r in top_results]
 
                 total += 1
-                if results_top1 and results_top1[0].card_id == true_id:
-                    correct += 1
-                else:
-                    best = results_top1[0] if results_top1 else None
-                    failures.append((img_path.name, true_id, best.card_id if best else "?", best.score if best else -1))
+                for k in top_k:
+                    if true_id in top_ids[:k]:
+                        correct_by_k[k] += 1
 
-            accuracy = correct / total if total > 0 else 0.0
-            results[(method, size)] = {"correct": correct, "total": total, "accuracy": accuracy}
+                if true_id not in top_ids[:1]:
+                    best = top_results[0] if top_results else None
+                    true_rank = None
+                    for idx, cand in enumerate(top_results, start=1):
+                        if cand.card_id == true_id:
+                            true_rank = idx
+                            break
+                    row = {
+                        "algorithm_variant": variant,
+                        "topk": 1,
+                        "image_file": img_path.name,
+                        "image_path": str(img_path.relative_to(dataset_dir)),
+                        "true_id": true_id,
+                        "predicted_id": best.card_id if best else "?",
+                        "score": float(best.score) if best else -1.0,
+                        "score_type": "hamming_distance",
+                        "true_rank": true_rank,
+                    }
+                    local_failures.append(row)
+                    failures.append(row)
 
-            print(f"[{method}@{size}] Accuracy: {correct}/{total} = {accuracy*100:.1f}%")
-            if failures:
-                print(f"  First few failures:")
-                for fname, true_id, pred_id, score in failures[:3]:
-                    print(f"    {fname}")
-                    print(f"      true: {true_id}")
-                    print(f"      pred: {pred_id}  (hamming dist: {score:.0f})")
+            for k in top_k:
+                correct = correct_by_k[k]
+                accuracy = correct / total if total > 0 else 0.0
+                results[(method, size, k)] = {"correct": correct, "total": total, "accuracy": accuracy}
+                print(f"[{method}@{size}] top-{k} accuracy: {correct}/{total} = {accuracy*100:.1f}%")
+
+            if local_failures:
+                local_failures.sort(key=lambda r: r["score"], reverse=True)
+                print(f"  First few top-1 failures:")
+                for row in local_failures[:3]:
+                    print(f"    {row['image_file']}")
+                    print(f"      true: {row['true_id']}")
+                    print(f"      pred: {row['predicted_id']}  (hamming dist: {row['score']:.0f})")
             print()
 
-    return results
+    return results, failures
 
 
-def print_summary(results: dict) -> None:
+def print_summary(results: dict, top_k: list[int]) -> None:
     if not results:
         print("No results.")
         return
 
-    print("=" * 60)
-    print(f"{'Method':<14} {'Size':>6}  {'Correct':>8}  {'Total':>8}  {'Accuracy':>9}")
-    print("-" * 60)
-    for (method, size), r in sorted(results.items()):
-        print(f"{method:<14} {size:>6}  {r['correct']:>8}  {r['total']:>8}  {r['accuracy']*100:>8.1f}%")
-    print("=" * 60)
+    print("=" * 72)
+    if len(top_k) == 1:
+        print(f"{'Method':<14} {'Size':>6}  {'Correct':>8}  {'Total':>8}  {'Accuracy':>9}")
+        print("-" * 72)
+        for (method, size, _), r in sorted(results.items()):
+            print(f"{method:<14} {size:>6}  {r['correct']:>8}  {r['total']:>8}  {r['accuracy']*100:>8.1f}%")
+    else:
+        ks_str = "  ".join(f"top-{k}" for k in sorted(top_k))
+        print(f"{'Method':<14} {'Size':>6}  {ks_str}")
+        print("-" * 72)
+        combos = sorted({(m, s) for (m, s, _) in results})
+        for method, size in combos:
+            accs = "  ".join(
+                f"{results[(method, size, k)]['accuracy']*100:>6.1f}%"
+                if (method, size, k) in results else "     — "
+                for k in sorted(top_k)
+            )
+            print(f"{method:<14} {size:>6}  {accs}")
+    print("=" * 72)
+
+
+def persist_results(
+    dataset: Path,
+    methods: list[str],
+    sizes: list[int],
+    top_k: list[int],
+    results: dict,
+    failures: list[dict],
+    output_root: Path,
+    run_id: str | None,
+    worst_n: int,
+) -> Path:
+    out_dir = make_run_dir(output_root, run_id)
+
+    summary_rows = [
+        {
+            "algorithm_variant": f"{method}_{size}",
+            "topk": k,
+            "correct": r["correct"],
+            "total": r["total"],
+            "accuracy": r["accuracy"],
+        }
+        for (method, size, k), r in sorted(results.items(), key=lambda x: (x[0][0], x[0][1], x[0][2]))
+    ]
+
+    payload = {
+        "meta": {
+            "script": "06_eval/01_eval_retrieval.py",
+            "dataset": str(dataset),
+            "methods": methods,
+            "sizes": sizes,
+            "top_k": top_k,
+        },
+        "summary": summary_rows,
+    }
+
+    write_summary_csv(out_dir / "summary.csv", summary_rows)
+    write_summary_json(out_dir / "summary.json", payload)
+    write_failures_jsonl(out_dir / "failures.jsonl", failures)
+    write_overview_markdown(out_dir / "overview.md", summary_rows)
+
+    update_central_result_csvs(
+        output_root=output_root,
+        summary_rows=summary_rows,
+        benchmark="hash_retrieval",
+        dataset=str(dataset),
+        run_id=out_dir.name,
+    )
+
+    by_variant: dict[str, list[dict]] = {}
+    for row in failures:
+        by_variant.setdefault(row["algorithm_variant"], []).append(row)
+    for variant, rows in by_variant.items():
+        rows.sort(key=lambda r: r["score"], reverse=True)
+
+    by_variant_summary: dict[str, list[dict]] = {}
+    for row in summary_rows:
+        by_variant_summary.setdefault(row["algorithm_variant"], []).append(row)
+
+    for variant, rows in sorted(by_variant_summary.items()):
+        write_algorithm_markdown(
+            out_dir / f"{variant}.md",
+            algorithm_variant=variant,
+            summary_rows=rows,
+            failures=by_variant.get(variant, []),
+            top_n=worst_n,
+        )
+
+    return out_dir
 
 
 # ---------------------------------------------------------------------------
@@ -173,14 +292,39 @@ def main():
                         help="Hash methods to evaluate")
     parser.add_argument("--sizes", nargs="+", type=int, default=DEFAULT_SIZES,
                         help="Hash grid sizes to evaluate")
+    parser.add_argument("--top-k", nargs="+", type=int, default=DEFAULT_TOP_K,
+                        help="Recall@k values to report (e.g. 1 3 10)")
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT,
+                        help=f"Root output directory for result runs (default: {DEFAULT_OUTPUT_ROOT})")
+    parser.add_argument("--run-id", type=str, default=None,
+                        help="Optional run id directory name under output-root (default: timestamp)")
+    parser.add_argument("--worst-n", type=int, default=DEFAULT_WORST_N,
+                        help="Number of worst-case failures to include in markdown reports")
+    parser.add_argument("--no-write-results", action="store_true",
+                        help="Do not write JSON/CSV/Markdown artifacts")
     args = parser.parse_args()
 
     print(f"Dataset: {args.dataset}")
     print(f"Methods: {args.methods}")
-    print(f"Sizes:   {args.sizes}\n")
+    print(f"Sizes:   {args.sizes}")
+    print(f"Top-k:   {args.top_k}\n")
 
-    results = run_eval(args.dataset, args.methods, args.sizes)
-    print_summary(results)
+    results, failures = run_eval(args.dataset, args.methods, args.sizes, args.top_k)
+    print_summary(results, args.top_k)
+
+    if not args.no_write_results:
+        out_dir = persist_results(
+            dataset=args.dataset,
+            methods=args.methods,
+            sizes=args.sizes,
+            top_k=args.top_k,
+            results=results,
+            failures=failures,
+            output_root=args.output_root,
+            run_id=args.run_id,
+            worst_n=args.worst_n,
+        )
+        print(f"\nSaved run artifacts to: {out_dir}")
 
 
 if __name__ == "__main__":

@@ -48,6 +48,18 @@ cd ccg_card_id
 pip install -r requirements.txt
 ```
 
+## Script Best Practices
+
+For long-running jobs in this repo:
+
+- **Resumable by default**: scripts should pick up from cache/checkpoints automatically.
+- **Rebuild switch**: expose `--rebuild-cache` to ignore cache and recompute from scratch.
+- **Startup cache summary**: print how many cached items were loaded, plus a reminder about `--rebuild-cache`.
+- **Periodic checkpointing**: write progress during runs (not only at the end) so crashes/interruption lose minimal work.
+- **Numbered, sequential scripts**: `01_`, `02_`, `03_` should be runnable in order for a fresh rebuild, and safely rerunnable individually while iterating.
+
+This keeps scripts notebook-like: each step can be rerun independently without redoing finished upstream work.
+
 ## Usage Pipeline
 
 ### Step 1: Sync Data from APIs
