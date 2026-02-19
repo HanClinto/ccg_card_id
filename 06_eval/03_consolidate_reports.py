@@ -23,6 +23,7 @@ from collections import defaultdict
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccg_card_id.config import cfg
@@ -58,7 +59,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
-def _img_md(path: Path, reports_root: Path, width: int = 180) -> str:
+def _img_md(path: Path, reports_root: Path, width_in: float = 1.4) -> str:
     rel = path
     try:
         rel = path.relative_to(reports_root)
@@ -67,7 +68,8 @@ def _img_md(path: Path, reports_root: Path, width: int = 180) -> str:
             rel = Path("..") / path.relative_to(reports_root.parent)
         except Exception:
             rel = path
-    return f'<img src="{rel}" width="{width}"/>'
+    # Pandoc-friendly markdown image syntax renders in both Markdown preview and PDF.
+    return f'![]({rel.as_posix()}){{width={width_in}in}}'
 
 
 def _front_image_for_id(card_id: str) -> Path | None:
@@ -77,6 +79,53 @@ def _front_image_for_id(card_id: str) -> Path | None:
     cid = m.group(0).lower()
     p = cfg.data_dir / "images" / "png" / "front" / cid[0] / cid[1] / f"{cid}.png"
     return p if p.exists() else None
+
+
+def _load_card_index() -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    src = cfg.scryfall_default_cards
+    if not src.exists():
+        return out
+    try:
+        cards = json.loads(src.read_text(encoding="utf-8"))
+    except Exception:
+        return out
+    for c in cards:
+        cid = str(c.get("id", "")).lower()
+        if not cid:
+            continue
+        out[cid] = {
+            "name": str(c.get("name", "")),
+            "set": str(c.get("set", "")).upper(),
+            "set_name": str(c.get("set_name", "")),
+        }
+    return out
+
+
+def _parse_input_label(image_key: str, card_index: dict[str, dict[str, str]]) -> str:
+    base = Path(image_key).name
+    m = UUID_RE.search(base)
+    cid = m.group(0).lower() if m else ""
+    meta = card_index.get(cid, {})
+    name = meta.get("name") or (base.split("_")[1] if "_" in base else "Card")
+    parts = base.split("_")
+    set_code = (parts[2].upper() if len(parts) >= 3 else (meta.get("set") or "?"))
+    sample = ""
+    if len(parts) >= 4:
+        sample = "_".join(parts[3:])
+        sample = re.sub(r"\.[^.]+$", "", sample)
+    if sample:
+        return f"{name} [{set_code}] ({sample})"
+    return f"{name} [{set_code}]"
+
+
+def _label_for_card_id(card_id: str, card_index: dict[str, dict[str, str]]) -> str:
+    cid = (card_id or "").lower()
+    meta = card_index.get(cid, {})
+    name = meta.get("name") or "Unknown"
+    set_code = meta.get("set") or "?"
+    set_name = meta.get("set_name") or "Unknown set"
+    return f"{name} [{set_code}] ({set_name})"
 
 
 def _load_variant_cache_rows(results_root: Path, variant: str) -> list[dict]:
@@ -221,6 +270,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
 
     runs = _collect_runs(results_root)
     latest = _latest_metrics(results_root, runs)
+    card_index = _load_card_index()
 
     lines: list[str] = []
     lines.append(f"# CCG Card ID Evaluation Report ({ts})")
@@ -271,8 +321,11 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             if not row:
                 return "-"
             ds = Path(row.get("dataset", cfg.data_dir / "datasets" / "solring"))
-            p = ds / str(row.get("image_key", ""))
-            return _img_md(p, reports_root) if p.exists() else str(row.get("image_key", "-"))
+            image_key = str(row.get("image_key", ""))
+            p = ds / image_key
+            caption = f"Input: {_parse_input_label(image_key, card_index)}"
+            img = _img_md(p, reports_root) if p.exists() else image_key
+            return f"{img}<br/><sub>{caption}</sub>"
 
         def _retrieved_img(row: dict | None) -> str:
             if not row:
@@ -280,13 +333,18 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             top_ids = row.get("top_ids", [])
             pred = top_ids[0] if top_ids else ""
             p = _front_image_for_id(pred)
-            return _img_md(p, reports_root) if p else (pred or "-")
+            caption = f"Retrieved: {_label_for_card_id(pred, card_index)}" if pred else "Retrieved: -"
+            img = _img_md(p, reports_root) if p else (pred or "-")
+            return f"{img}<br/><sub>{caption}</sub>"
 
         def _expected_img(row: dict | None) -> str:
             if not row:
                 return "-"
-            p = _front_image_for_id(str(row.get("true_id", "")))
-            return _img_md(p, reports_root) if p else str(row.get("true_id", "-"))
+            true_id = str(row.get("true_id", ""))
+            p = _front_image_for_id(true_id)
+            caption = f"Expected: {_label_for_card_id(true_id, card_index)}" if true_id else "Expected: -"
+            img = _img_md(p, reports_root) if p else (true_id or "-")
+            return f"{img}<br/><sub>{caption}</sub>"
 
         lines.append("")
         lines.append("Failure gallery (3×3)")
