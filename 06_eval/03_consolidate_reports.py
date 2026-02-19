@@ -20,6 +20,7 @@ import json
 import shutil
 import subprocess
 from collections import defaultdict
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -52,6 +53,72 @@ def _read_jsonl(path: Path) -> list[dict]:
             except Exception:
                 pass
     return rows
+
+
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def _img_md(path: Path, reports_root: Path, width: int = 180) -> str:
+    rel = path
+    try:
+        rel = path.relative_to(reports_root)
+    except Exception:
+        try:
+            rel = Path("..") / path.relative_to(reports_root.parent)
+        except Exception:
+            rel = path
+    return f'<img src="{rel}" width="{width}"/>'
+
+
+def _front_image_for_id(card_id: str) -> Path | None:
+    m = UUID_RE.search(card_id or "")
+    if not m:
+        return None
+    cid = m.group(0).lower()
+    p = cfg.data_dir / "images" / "png" / "front" / cid[0] / cid[1] / f"{cid}.png"
+    return p if p.exists() else None
+
+
+def _load_variant_cache_rows(results_root: Path, variant: str) -> list[dict]:
+    rows: list[dict] = []
+    for jf in (results_root / "cache" / "hash_retrieval").rglob("*.jsonl"):
+        recs = _read_jsonl(jf)
+        for r in recs:
+            if r.get("algorithm_variant") == variant:
+                rows.append(r)
+    return rows
+
+
+def _pick_failure_examples(cache_rows: list[dict]) -> dict[str, dict | None]:
+    # Prefer unique rows across categories when possible
+    buckets = {"top1": None, "top3": None, "top5": None}
+
+    def rank(r: dict) -> int:
+        tr = r.get("true_rank")
+        return int(tr) if isinstance(tr, int) or (isinstance(tr, str) and tr.isdigit()) else 9999
+
+    sorted_rows = sorted(cache_rows, key=rank)
+
+    for r in sorted_rows:
+        tr = rank(r)
+        if buckets["top1"] is None and 2 <= tr <= 3:
+            buckets["top1"] = r
+        if buckets["top3"] is None and 4 <= tr <= 5:
+            buckets["top3"] = r
+        if buckets["top5"] is None and 6 <= tr <= 10:
+            buckets["top5"] = r
+
+    # relaxed fallback
+    for r in sorted_rows:
+        tr = rank(r)
+        if buckets["top1"] is None and tr > 1:
+            buckets["top1"] = r
+        if buckets["top3"] is None and tr > 3:
+            buckets["top3"] = r
+        if buckets["top5"] is None and tr > 5:
+            buckets["top5"] = r
+
+    return buckets
 
 
 def _collect_runs(results_root: Path) -> list[Path]:
@@ -192,10 +259,43 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         lines.append("")
         lines.append("Accuracy snapshot:")
         lines.append("")
-        lines.append("| top-k | correct | total | accuracy |")
-        lines.append("|---:|---:|---:|---:|")
+        lines.append("| top-k | correct | total | accuracy | bytes/card |")
+        lines.append("|---:|---:|---:|---:|---:|")
         for r in sorted(by_variant[v], key=lambda x: int(float(x.get("topk", 0) or 0))):
-            lines.append(f"| {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} |")
+            lines.append(f"| {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} | {r.get('bytes_per_card','-')} |")
+
+        cache_rows = _load_variant_cache_rows(results_root, v)
+        picks = _pick_failure_examples(cache_rows)
+
+        def _input_img(row: dict | None) -> str:
+            if not row:
+                return "-"
+            ds = Path(row.get("dataset", cfg.data_dir / "datasets" / "solring"))
+            p = ds / str(row.get("image_key", ""))
+            return _img_md(p, reports_root) if p.exists() else str(row.get("image_key", "-"))
+
+        def _retrieved_img(row: dict | None) -> str:
+            if not row:
+                return "-"
+            top_ids = row.get("top_ids", [])
+            pred = top_ids[0] if top_ids else ""
+            p = _front_image_for_id(pred)
+            return _img_md(p, reports_root) if p else (pred or "-")
+
+        def _expected_img(row: dict | None) -> str:
+            if not row:
+                return "-"
+            p = _front_image_for_id(str(row.get("true_id", "")))
+            return _img_md(p, reports_root) if p else str(row.get("true_id", "-"))
+
+        lines.append("")
+        lines.append("Failure gallery (3×3)")
+        lines.append("")
+        lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
+        lines.append("|---|---|---|---|")
+        lines.append(f"| Input | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
+        lines.append(f"| Retrieved | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
+        lines.append(f"| Expected | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
 
         fails = _find_failures_for_variant(runs, v, worst_n)
         lines.append("")
