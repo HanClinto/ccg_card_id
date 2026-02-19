@@ -58,12 +58,51 @@ def _collect_runs(results_root: Path) -> list[Path]:
     runs: list[Path] = []
     if not results_root.exists():
         return runs
-    for p in sorted(results_root.iterdir()):
-        if not p.is_dir() or p.name == "cache":
+    for p in results_root.rglob("summary.csv"):
+        run_dir = p.parent
+        if "cache" in run_dir.parts:
             continue
-        if (p / "summary.csv").exists():
-            runs.append(p)
+        runs.append(run_dir)
+    runs = sorted(set(runs))
     return runs
+
+
+def _bytes_per_card_from_variant(variant: str) -> int | None:
+    try:
+        size = int(variant.split("_")[-1])
+        return (size * size) // 8
+    except Exception:
+        return None
+
+
+def _metrics_from_cache(results_root: Path) -> list[dict]:
+    cache_dir = results_root / "cache" / "hash_retrieval"
+    rows: list[dict] = []
+    if not cache_dir.exists():
+        return rows
+    for jf in cache_dir.rglob("*.jsonl"):
+        recs = _read_jsonl(jf)
+        if not recs:
+            continue
+        variant = recs[0].get("algorithm_variant", jf.stem)
+        total = len(recs)
+        for k in (1, 3, 10):
+            correct = 0
+            for r in recs:
+                top_ids = r.get("top_ids", [])
+                true_id = r.get("true_id")
+                if true_id in top_ids[:k]:
+                    correct += 1
+            rows.append({
+                "run_id": "cache_snapshot",
+                "algorithm_variant": variant,
+                "topk": str(k),
+                "correct": str(correct),
+                "total": str(total),
+                "accuracy": str(correct / total if total else 0.0),
+                "bytes_per_card": str(_bytes_per_card_from_variant(variant) or ""),
+            })
+    return rows
 
 
 def _latest_metrics(results_root: Path, runs: list[Path]) -> list[dict]:
@@ -85,9 +124,14 @@ def _latest_metrics(results_root: Path, runs: list[Path]) -> list[dict]:
                 "correct": r.get("correct", ""),
                 "total": r.get("total", ""),
                 "accuracy": r.get("accuracy", ""),
+                "bytes_per_card": r.get("bytes_per_card", ""),
             }
             agg[key] = row
-    return list(agg.values())
+    if agg:
+        return list(agg.values())
+
+    # final fallback: infer current snapshot directly from cache jsonl files
+    return _metrics_from_cache(results_root)
 
 
 def _find_failures_for_variant(runs: list[Path], variant: str, n: int) -> list[dict]:
@@ -179,12 +223,10 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
     built_pdf: Path | None = None
     if shutil.which("pandoc"):
         try:
-            subprocess.run([
-                "pandoc",
-                str(md_path),
-                "-o",
-                str(pdf_path),
-            ], check=True)
+            cmd = ["pandoc", str(md_path), "-o", str(pdf_path)]
+            if shutil.which("tectonic"):
+                cmd.extend(["--pdf-engine", "tectonic"])
+            subprocess.run(cmd, check=True)
             built_pdf = pdf_path
         except Exception:
             built_pdf = None
