@@ -17,8 +17,9 @@ Usage:
     print(cfg.phash_vectors_file(64))  # ...default_cards_phash_64.json
 """
 
-import os
 from pathlib import Path
+
+from .project_settings import get_data_dir
 
 # Official Meta DINOv2 model variants (smallest → largest)
 DINOV2_MODELS: dict[str, str] = {
@@ -30,10 +31,7 @@ DINOV2_MODELS: dict[str, str] = {
 
 
 def _get_data_dir() -> Path:
-    env = os.environ.get("CCG_DATA_DIR")
-    if env:
-        return Path(env).expanduser().resolve()
-    return Path.home() / "claw" / "data" / "ccg_card_id"
+    return get_data_dir()
 
 
 class Config:

@@ -10,10 +10,12 @@ comparable: same test dataset, same ground-truth extraction, same metrics.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Must be set before torch is imported.
@@ -52,11 +54,11 @@ _TRANSFORM = T.Compose([
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATASET = Path.home() / "claw" / "data" / "ccg_card_id" / "datasets" / "solring"
+DEFAULT_DATASET = cfg.data_dir / "datasets" / "solring"
 DEFAULT_MODELS = ["small"]
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_TOP_K = [1, 3, 10]
-DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent / "results"
+DEFAULT_OUTPUT_ROOT = cfg.data_dir / "results" / "eval"
 DEFAULT_WORST_N = 20
 
 UUID_RE = re.compile(
@@ -71,6 +73,30 @@ UUID_RE = re.compile(
 def extract_card_id(filename: str) -> str | None:
     m = UUID_RE.search(filename)
     return m.group(0) if m else None
+
+
+def _cache_path(output_root: Path, dataset_dir: Path, variant: str) -> Path:
+    ds = dataset_dir.name or "dataset"
+    return output_root / "cache" / "dinov2_retrieval" / ds / f"dinov2_{variant}.jsonl"
+
+
+def _load_cache(path: Path) -> dict[str, dict]:
+    rows: dict[str, dict] = {}
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            key = row.get("image_key")
+            if isinstance(key, str):
+                rows[key] = row
+    return rows
 
 
 def get_device() -> torch.device:
@@ -133,6 +159,8 @@ def run_eval(
     variants: list[str],
     batch_size: int,
     top_k: list[int],
+    output_root: Path,
+    rebuild_cache: bool,
 ) -> tuple[dict, list[dict]]:
     test_dir = dataset_dir / "04_data" / "aligned"
     if not test_dir.exists():
@@ -416,6 +444,11 @@ def main() -> None:
         action="store_true",
         help="Do not write JSON/CSV/Markdown artifacts.",
     )
+    parser.add_argument(
+        "--rebuild-cache",
+        action="store_true",
+        help="Ignore cached per-image eval JSONL and recompute.",
+    )
     args = parser.parse_args()
 
     print(f"Dataset: {args.dataset}")
@@ -424,7 +457,14 @@ def main() -> None:
     print(f"Top-k:   {args.top_k}")
     print()
 
-    results, failures = run_eval(args.dataset, args.models, args.batch_size, args.top_k)
+    results, failures = run_eval(
+        args.dataset,
+        args.models,
+        args.batch_size,
+        args.top_k,
+        args.output_root,
+        args.rebuild_cache,
+    )
     print_summary(results, args.top_k)
 
     if not args.no_write_results:

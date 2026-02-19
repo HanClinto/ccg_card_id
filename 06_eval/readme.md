@@ -13,7 +13,7 @@ Both scripts still print terminal summaries and now also persist run artifacts b
 
 By default, each run writes to:
 
-`06_eval/results/<timestamp>/`
+`$CCG_DATA_DIR/results/eval/<timestamp>/` (or `<CCG_DATA_ROOT>/ccg_card_id/results/eval/<timestamp>`)
 
 You can override the root or run id with CLI flags.
 
@@ -64,7 +64,7 @@ Both scripts support:
 
 ## Centralized historical/latest CSVs
 
-In addition to per-run folders, each run updates two shared files under `--output-root`:
+In addition to per-run folders, each run updates two shared files under `--output-root` (default: `$CCG_DATA_DIR/results/eval`):
 
 - `history_results.csv`: append-only log of every run record (`run_at,run_id,benchmark,dataset,algorithm_variant,topk,correct,total,accuracy`)
 - `latest_results.csv`: one most-recent row per unique `(benchmark, dataset, algorithm_variant, topk)`

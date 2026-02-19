@@ -37,6 +37,20 @@ In this way, we can run the full pipeline of scripts on a nightly basis, and onl
   └── 01_eval_retrieval.py  # Retrieval performance evaluation
 ```
 
+## Configuration
+
+Use a project-local env file for portable paths:
+
+```bash
+cp .env.example .env
+# edit as needed (CCG_DATA_ROOT / optional CCG_DATA_DIR)
+```
+
+Path resolution order:
+1. `CCG_DATA_DIR` (if set)
+2. `CCG_DATA_ROOT/ccg_card_id`
+3. default `~/claw/data/ccg_card_id`
+
 ## Installation
 
 ```bash
@@ -141,6 +155,10 @@ pip install requests tqdm pillow imagehash torch transformers numpy
 - **Multiple Vectorizers**: pHash (fast), DINOv2 (accurate), BRIEF (efficient)
 - **Evaluation Framework**: Standardized benchmarks for comparing methods
 - **Cache Management**: All downloaded and computed data is cached locally
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit discipline and workflow expectations.
 
 ## License
 
