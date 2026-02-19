@@ -17,9 +17,11 @@ import argparse
 import csv
 import sys
 import json
+import os
 import shutil
 import subprocess
 from collections import defaultdict
+import hashlib
 import re
 from datetime import datetime
 from pathlib import Path
@@ -59,16 +61,14 @@ def _read_jsonl(path: Path) -> list[dict]:
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
-def _img_md(path: Path, reports_root: Path) -> str:
-    rel = path
-    try:
-        rel = path.relative_to(reports_root)
-    except Exception:
-        try:
-            rel = Path("..") / path.relative_to(reports_root.parent)
-        except Exception:
-            rel = path
-    # Plain markdown image syntax renders cleanly in VSCode preview and pandoc PDF.
+def _img_md(path: Path, reports_root: Path, assets_dir: Path) -> str:
+    """Symlink image into report-local assets dir and return relative markdown ref."""
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
+    target = assets_dir / f"{digest}{path.suffix.lower()}"
+    if not target.exists():
+        os.symlink(path, target)
+    rel = target.relative_to(reports_root)
     return f'![]({rel.as_posix()})'
 
 
@@ -260,6 +260,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")
     md_path = reports_root / f"eval_report_{ts}.md"
     pdf_path = reports_root / f"eval_report_{ts}.pdf"
+    assets_dir = reports_root / f"{md_path.stem}_assets"
 
     runs = _collect_runs(results_root)
     latest = _latest_metrics(results_root, runs)
@@ -309,6 +310,8 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         )
 
     lines.append("")
+    lines.append("\\newpage")
+    lines.append("")
     lines.append("## Algorithm breakdowns + representative failures")
     lines.append("")
 
@@ -317,10 +320,11 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
     for r in latest:
         by_variant[r.get("algorithm_variant", "")].append(r)
 
-    for v in variants:
+    for i, v in enumerate(variants):
+        if i > 0:
+            lines.append("\\newpage")
+            lines.append("")
         lines.append(f"### {v}")
-        lines.append("")
-        lines.append("Accuracy snapshot:")
         lines.append("")
         lines.append("| top-k | correct | total | accuracy | bytes/card |")
         lines.append("|---:|---:|---:|---:|---:|")
@@ -336,7 +340,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             ds = Path(row.get("dataset", cfg.data_dir / "datasets" / "solring"))
             image_key = str(row.get("image_key", ""))
             p = ds / image_key
-            return _img_md(p, reports_root) if p.exists() else image_key
+            return _img_md(p, reports_root, assets_dir) if p.exists() else image_key
 
         def _retrieved_img(row: dict | None) -> str:
             if not row:
@@ -344,14 +348,14 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             top_ids = row.get("top_ids", [])
             pred = top_ids[0] if top_ids else ""
             p = _front_image_for_id(pred)
-            return _img_md(p, reports_root) if p else (pred or "-")
+            return _img_md(p, reports_root, assets_dir) if p else (pred or "-")
 
         def _expected_img(row: dict | None) -> str:
             if not row:
                 return "-"
             true_id = str(row.get("true_id", ""))
             p = _front_image_for_id(true_id)
-            return _img_md(p, reports_root) if p else (true_id or "-")
+            return _img_md(p, reports_root, assets_dir) if p else (true_id or "-")
 
         def _input_meta(row: dict | None) -> str:
             if not row:
@@ -397,17 +401,19 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             return f"{exp_score} (rank={true_rank})"
 
         lines.append("")
-        lines.append("Failure gallery (3×3)")
-        lines.append("")
         lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
         lines.append("|---|---|---|---|")
         lines.append(f"| Input sample | {_input_meta(picks['top1'])} | {_input_meta(picks['top3'])} | {_input_meta(picks['top5'])} |")
         lines.append(f"| Input image | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
-        lines.append("| --- | --- | --- | --- |")
+        lines.append("")
+        lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
+        lines.append("|---|---|---|---|")
         lines.append(f"| Retrieved info | {_retrieved_meta(picks['top1'])} | {_retrieved_meta(picks['top3'])} | {_retrieved_meta(picks['top5'])} |")
         lines.append(f"| Retrieved image | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
         lines.append(f"| Retrieved score | {_retrieved_score(picks['top1'])} | {_retrieved_score(picks['top3'])} | {_retrieved_score(picks['top5'])} |")
-        lines.append("| --- | --- | --- | --- |")
+        lines.append("")
+        lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
+        lines.append("|---|---|---|---|")
         lines.append(f"| Expected info | {_expected_meta(picks['top1'])} | {_expected_meta(picks['top3'])} | {_expected_meta(picks['top5'])} |")
         lines.append(f"| Expected image | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
         lines.append(f"| Expected score | {_expected_score(picks['top1'])} | {_expected_score(picks['top3'])} | {_expected_score(picks['top5'])} |")
@@ -427,18 +433,14 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             lines.append("| (none yet) | - | - | - | - |")
         lines.append("")
 
-    lines.append("## Recommendations")
-    lines.append("")
-    lines.append("- Use top-1 for strict identification confidence; top-3/top-10 for operator-assist workflows.")
-    lines.append("- Keep brute-force as ground-truth benchmark path for deterministic comparisons.")
-    lines.append("- Continue collecting failure examples for lighting/angle classes to guide pre-processing improvements.")
+    # recommendations intentionally omitted
 
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     built_pdf: Path | None = None
     if shutil.which("pandoc"):
         try:
-            cmd = ["pandoc", str(md_path), "-o", str(pdf_path)]
+            cmd = ["pandoc", str(md_path), "-o", str(pdf_path), "--resource-path", str(reports_root)]
             if shutil.which("tectonic"):
                 cmd.extend(["--pdf-engine", "tectonic"])
             # Tight margins + slightly smaller base font to reduce table overlap.
