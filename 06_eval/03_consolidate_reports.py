@@ -59,7 +59,7 @@ def _read_jsonl(path: Path) -> list[dict]:
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
-def _img_md(path: Path, reports_root: Path, width_in: float = 1.4) -> str:
+def _img_md(path: Path, reports_root: Path) -> str:
     rel = path
     try:
         rel = path.relative_to(reports_root)
@@ -68,8 +68,8 @@ def _img_md(path: Path, reports_root: Path, width_in: float = 1.4) -> str:
             rel = Path("..") / path.relative_to(reports_root.parent)
         except Exception:
             rel = path
-    # Pandoc-friendly markdown image syntax renders in both Markdown preview and PDF.
-    return f'![]({rel.as_posix()}){{width={width_in}in}}'
+    # Plain markdown image syntax renders cleanly in VSCode preview and pandoc PDF.
+    return f'![]({rel.as_posix()})'
 
 
 def _front_image_for_id(card_id: str) -> Path | None:
@@ -104,19 +104,12 @@ def _load_card_index() -> dict[str, dict[str, str]]:
 
 def _parse_input_label(image_key: str, card_index: dict[str, dict[str, str]]) -> str:
     base = Path(image_key).name
-    m = UUID_RE.search(base)
-    cid = m.group(0).lower() if m else ""
-    meta = card_index.get(cid, {})
-    name = meta.get("name") or (base.split("_")[1] if "_" in base else "Card")
     parts = base.split("_")
-    set_code = (parts[2].upper() if len(parts) >= 3 else (meta.get("set") or "?"))
-    sample = ""
     if len(parts) >= 4:
         sample = "_".join(parts[3:])
         sample = re.sub(r"\.[^.]+$", "", sample)
-    if sample:
-        return f"{name} [{set_code}] ({sample})"
-    return f"{name} [{set_code}]"
+        return sample
+    return re.sub(r"\.[^.]+$", "", base)
 
 
 def _label_for_card_id(card_id: str, card_index: dict[str, dict[str, str]]) -> str:
@@ -281,8 +274,8 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
 
     lines.append("## Latest comparison table")
     lines.append("")
-    lines.append("| algorithm_variant | top-k | correct | total | accuracy | bytes/card |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
+    lines.append("| algorithm_variant | bytes/card | Top-1 | Top-1 % | Top-3 | Top-3 % | Top-10 | Top-10 % |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
 
     def _acc_pct(a: str) -> str:
         try:
@@ -290,9 +283,29 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         except Exception:
             return "-"
 
-    for r in sorted(latest, key=lambda x: (x.get("algorithm_variant", ""), int(float(x.get("topk", 0) or 0)))):
+    latest_by_variant: dict[str, dict[int, dict[str, str]]] = defaultdict(dict)
+    bytes_by_variant: dict[str, str] = {}
+    for r in latest:
+        v = r.get("algorithm_variant", "")
+        try:
+            k = int(float(r.get("topk", 0) or 0))
+        except Exception:
+            continue
+        latest_by_variant[v][k] = r
+        if v not in bytes_by_variant or not bytes_by_variant[v]:
+            bytes_by_variant[v] = str(r.get("bytes_per_card", "-"))
+
+    def _count(v: str, k: int) -> str:
+        row = latest_by_variant.get(v, {}).get(k)
+        return str(row.get("correct", "-")) if row else "-"
+
+    def _pct(v: str, k: int) -> str:
+        row = latest_by_variant.get(v, {}).get(k)
+        return _acc_pct(str(row.get("accuracy", ""))) if row else "-"
+
+    for v in sorted(latest_by_variant.keys()):
         lines.append(
-            f"| {r.get('algorithm_variant','')} | {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} | {r.get('bytes_per_card','-')} |"
+            f"| {v} | {bytes_by_variant.get(v, '-')} | {_count(v,1)} | {_pct(v,1)} | {_count(v,3)} | {_pct(v,3)} | {_count(v,10)} | {_pct(v,10)} |"
         )
 
     lines.append("")
@@ -323,49 +336,79 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             ds = Path(row.get("dataset", cfg.data_dir / "datasets" / "solring"))
             image_key = str(row.get("image_key", ""))
             p = ds / image_key
-            caption = f"Input: {_parse_input_label(image_key, card_index)}"
-            img = _img_md(p, reports_root) if p.exists() else image_key
-            return f"{img}<br/><sub>{caption}</sub>"
+            return _img_md(p, reports_root) if p.exists() else image_key
 
         def _retrieved_img(row: dict | None) -> str:
             if not row:
                 return "-"
             top_ids = row.get("top_ids", [])
-            top_scores = row.get("top_scores", [])
             pred = top_ids[0] if top_ids else ""
-            pred_score = top_scores[0] if top_scores else None
             p = _front_image_for_id(pred)
-            base = _label_for_card_id(pred, card_index) if pred else "-"
-            score_txt = f" · score={pred_score}" if pred_score is not None else ""
-            caption = f"Retrieved: {base}{score_txt}"
-            img = _img_md(p, reports_root) if p else (pred or "-")
-            return f"{img}<br/><sub>{caption}</sub>"
+            return _img_md(p, reports_root) if p else (pred or "-")
 
         def _expected_img(row: dict | None) -> str:
             if not row:
                 return "-"
             true_id = str(row.get("true_id", ""))
+            p = _front_image_for_id(true_id)
+            return _img_md(p, reports_root) if p else (true_id or "-")
+
+        def _input_meta(row: dict | None) -> str:
+            if not row:
+                return "-"
+            image_key = str(row.get("image_key", ""))
+            return _parse_input_label(image_key, card_index)
+
+        def _retrieved_meta(row: dict | None) -> str:
+            if not row:
+                return "-"
+            top_ids = row.get("top_ids", [])
+            pred = top_ids[0] if top_ids else ""
+            return _label_for_card_id(pred, card_index) if pred else "-"
+
+        def _expected_meta(row: dict | None) -> str:
+            if not row:
+                return "-"
+            true_id = str(row.get("true_id", ""))
+            return _label_for_card_id(true_id, card_index) if true_id else "-"
+
+        def _retrieved_score(row: dict | None) -> str:
+            if not row:
+                return "-"
+            top_scores = row.get("top_scores", [])
+            if top_scores:
+                return str(top_scores[0])
+            return "-"
+
+        def _expected_score(row: dict | None) -> str:
+            if not row:
+                return "-"
             top_scores = row.get("top_scores", [])
             true_rank = row.get("true_rank")
             exp_score = None
-            if isinstance(true_rank, int) and true_rank >= 1 and true_rank <= len(top_scores):
+            if isinstance(true_rank, int) and 1 <= true_rank <= len(top_scores):
                 exp_score = top_scores[true_rank - 1]
-            p = _front_image_for_id(true_id)
-            base = _label_for_card_id(true_id, card_index) if true_id else "-"
-            rank_txt = f" · rank={true_rank}" if true_rank is not None else ""
-            score_txt = f" · score={exp_score}" if exp_score is not None else ""
-            caption = f"Expected: {base}{rank_txt}{score_txt}"
-            img = _img_md(p, reports_root) if p else (true_id or "-")
-            return f"{img}<br/><sub>{caption}</sub>"
+            if exp_score is None and true_rank is None:
+                return "-"
+            if exp_score is None:
+                return f"(rank={true_rank})"
+            if true_rank is None:
+                return f"{exp_score}"
+            return f"{exp_score} (rank={true_rank})"
 
         lines.append("")
         lines.append("Failure gallery (3×3)")
         lines.append("")
         lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
         lines.append("|---|---|---|---|")
-        lines.append(f"| Input | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
-        lines.append(f"| Retrieved | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
-        lines.append(f"| Expected | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
+        lines.append(f"| Input sample | {_input_meta(picks['top1'])} | {_input_meta(picks['top3'])} | {_input_meta(picks['top5'])} |")
+        lines.append(f"| Input image | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
+        lines.append(f"| Retrieved info | {_retrieved_meta(picks['top1'])} | {_retrieved_meta(picks['top3'])} | {_retrieved_meta(picks['top5'])} |")
+        lines.append(f"| Retrieved image | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
+        lines.append(f"| Retrieved score | {_retrieved_score(picks['top1'])} | {_retrieved_score(picks['top3'])} | {_retrieved_score(picks['top5'])} |")
+        lines.append(f"| Expected info | {_expected_meta(picks['top1'])} | {_expected_meta(picks['top3'])} | {_expected_meta(picks['top5'])} |")
+        lines.append(f"| Expected image | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
+        lines.append(f"| Expected score | {_expected_score(picks['top1'])} | {_expected_score(picks['top3'])} | {_expected_score(picks['top5'])} |")
 
         fails = _find_failures_for_variant(runs, v, worst_n)
         lines.append("")
@@ -396,6 +439,8 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             cmd = ["pandoc", str(md_path), "-o", str(pdf_path)]
             if shutil.which("tectonic"):
                 cmd.extend(["--pdf-engine", "tectonic"])
+            # Tight margins + slightly smaller base font to reduce table overlap.
+            cmd.extend(["-V", "geometry:margin=0.35in", "-V", "fontsize=10pt"])
             subprocess.run(cmd, check=True)
             built_pdf = pdf_path
         except Exception:
