@@ -25,7 +25,7 @@ image_quality = "png"
 english_only = True
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
-BULK_DATA_PATH = os.path.join(CACHE_DIR, "all_cards.json")
+BULK_DATA_PATH = os.path.join(CACHE_DIR, "default_cards.json")
 IMAGES_DIR = os.path.join(CACHE_DIR, "images", image_quality)
 
 def load_bulk_data():
@@ -80,7 +80,9 @@ def sync_scryfall_images(cards):
         for card in pbar:
             card_id = card["id"]
             pbar.set_postfix({"card_id": card_id})
-            faces = card.get("card_faces", [card])  # Use card_faces if present, else single face
+            faces = [card]
+            if "image_uris" not in card:
+                faces = card.get("card_faces", [card])  # Use card_faces if present, else single face
             # If the card's image_status is "missing" or "placeholder", skip downloading images
             if card.get("image_status") in ["missing", "placeholder"]:
                 continue
