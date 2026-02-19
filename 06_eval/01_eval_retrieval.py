@@ -21,9 +21,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import imagehash
@@ -41,10 +43,10 @@ from reporting import make_run_dir, update_central_result_csvs, write_algorithm_
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATASET = Path.home() / "claw" / "data" / "ccg_card_id" / "datasets" / "solring"
+DEFAULT_DATASET = cfg.data_dir / "datasets" / "solring"
 DEFAULT_METHODS = ["phash", "whash_db4"]
 DEFAULT_SIZES = [32, 64, 128, 256]
-DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parent / "results"
+DEFAULT_OUTPUT_ROOT = cfg.data_dir / "results" / "eval"
 DEFAULT_WORST_N = 20
 DEFAULT_TOP_K = [1, 3, 10]
 
@@ -80,11 +82,42 @@ def hash_image(img_path: Path, method: str, hash_size: int) -> imagehash.ImageHa
         return None
 
 
+def _cache_path(output_root: Path, dataset_dir: Path, variant: str) -> Path:
+    ds = dataset_dir.name or "dataset"
+    return output_root / "cache" / "hash_retrieval" / ds / f"{variant}.jsonl"
+
+
+def _load_cache(path: Path) -> dict[str, dict]:
+    rows: dict[str, dict] = {}
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            key = row.get("image_key")
+            if isinstance(key, str):
+                rows[key] = row
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Eval
 # ---------------------------------------------------------------------------
 
-def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int], top_k: list[int]) -> tuple[dict, list[dict]]:
+def run_eval(
+    dataset_dir: Path,
+    methods: list[str],
+    sizes: list[int],
+    top_k: list[int],
+    output_root: Path,
+    rebuild_cache: bool,
+) -> tuple[dict, list[dict]]:
     """
     Run retrieval eval for each (method, size) combination.
 
@@ -126,44 +159,80 @@ def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int], top_k: lis
             total = 0
             local_failures = []
 
-            for img_path in tqdm(test_images, desc=f"{method}@{size}", unit="img"):
-                true_id = extract_card_id(img_path.name)
-                if true_id is None:
-                    continue
+            cache_path = _cache_path(output_root, dataset_dir, variant)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_rows = {} if rebuild_cache else _load_cache(cache_path)
+            cache_mode = "w" if rebuild_cache else "a"
+            cache_hits = 0
+            cache_writes = 0
 
-                h = hash_image(img_path, method, size)
-                if h is None:
-                    continue
+            with cache_path.open(cache_mode, encoding="utf-8") as cache_out:
+                for img_path in tqdm(test_images, desc=f"{method}@{size}", unit="img"):
+                    true_id = extract_card_id(img_path.name)
+                    if true_id is None:
+                        continue
 
-                query_vec = h.hash.flatten().astype(np.int8)
-                top_results = db.search(query_vec, k=max_k)
-                top_ids = [r.card_id for r in top_results]
+                    image_key = str(img_path.relative_to(dataset_dir))
+                    row = cache_rows.get(image_key)
 
-                total += 1
-                for k in top_k:
-                    if true_id in top_ids[:k]:
-                        correct_by_k[k] += 1
+                    if row is None:
+                        h = hash_image(img_path, method, size)
+                        if h is None:
+                            continue
 
-                if true_id not in top_ids[:1]:
-                    best = top_results[0] if top_results else None
-                    true_rank = None
-                    for idx, cand in enumerate(top_results, start=1):
-                        if cand.card_id == true_id:
-                            true_rank = idx
-                            break
-                    row = {
-                        "algorithm_variant": variant,
-                        "topk": 1,
-                        "image_file": img_path.name,
-                        "image_path": str(img_path.relative_to(dataset_dir)),
-                        "true_id": true_id,
-                        "predicted_id": best.card_id if best else "?",
-                        "score": float(best.score) if best else -1.0,
-                        "score_type": "hamming_distance",
-                        "true_rank": true_rank,
-                    }
-                    local_failures.append(row)
-                    failures.append(row)
+                        t_eval0 = time.perf_counter()
+                        query_vec = h.hash.flatten().astype(np.int8)
+                        top_results = db.search(query_vec, k=max_k)
+                        eval_ms = (time.perf_counter() - t_eval0) * 1000.0
+
+                        top_ids = [r.card_id for r in top_results]
+                        top_scores = [float(r.score) for r in top_results]
+                        true_rank = next((i for i, cid in enumerate(top_ids, start=1) if cid == true_id), None)
+
+                        row = {
+                            "image_key": image_key,
+                            "algorithm_variant": variant,
+                            "benchmark": "hash_retrieval",
+                            "dataset": str(dataset_dir),
+                            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                            "eval_ms": round(eval_ms, 3),
+                            "true_id": true_id,
+                            "top_ids": top_ids,
+                            "top_scores": top_scores,
+                            "correct_top1": true_id in top_ids[:1],
+                            "correct_top3": true_id in top_ids[:3],
+                            "correct_top10": true_id in top_ids[:10],
+                            "true_rank": true_rank,
+                        }
+                        cache_out.write(json.dumps(row) + "\n")
+                        cache_out.flush()
+                        cache_writes += 1
+                    else:
+                        cache_hits += 1
+
+                    top_ids = row.get("top_ids", [])
+                    total += 1
+                    for k in top_k:
+                        if true_id in top_ids[:k]:
+                            correct_by_k[k] += 1
+
+                    if true_id not in top_ids[:1]:
+                        top_scores = row.get("top_scores", [])
+                        row_fail = {
+                            "algorithm_variant": variant,
+                            "topk": 1,
+                            "image_file": img_path.name,
+                            "image_path": image_key,
+                            "true_id": true_id,
+                            "predicted_id": top_ids[0] if top_ids else "?",
+                            "score": float(top_scores[0]) if top_scores else -1.0,
+                            "score_type": "hamming_distance",
+                            "true_rank": row.get("true_rank"),
+                        }
+                        local_failures.append(row_fail)
+                        failures.append(row_fail)
+
+            print(f"  Cache: hits={cache_hits}, new={cache_writes}, file={cache_path}")
 
             for k in top_k:
                 correct = correct_by_k[k]
@@ -302,6 +371,8 @@ def main():
                         help="Number of worst-case failures to include in markdown reports")
     parser.add_argument("--no-write-results", action="store_true",
                         help="Do not write JSON/CSV/Markdown artifacts")
+    parser.add_argument("--rebuild-cache", action="store_true",
+                        help="Ignore cached per-image eval JSONL and recompute")
     args = parser.parse_args()
 
     print(f"Dataset: {args.dataset}")
@@ -309,7 +380,14 @@ def main():
     print(f"Sizes:   {args.sizes}")
     print(f"Top-k:   {args.top_k}\n")
 
-    results, failures = run_eval(args.dataset, args.methods, args.sizes, args.top_k)
+    results, failures = run_eval(
+        args.dataset,
+        args.methods,
+        args.sizes,
+        args.top_k,
+        args.output_root,
+        args.rebuild_cache,
+    )
     print_summary(results, args.top_k)
 
     if not args.no_write_results:
