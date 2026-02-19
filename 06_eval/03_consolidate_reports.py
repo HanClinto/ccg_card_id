@@ -17,7 +17,6 @@ import argparse
 import csv
 import sys
 import json
-import os
 import shutil
 import subprocess
 from collections import defaultdict
@@ -62,12 +61,12 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 
 def _img_md(path: Path, reports_root: Path, assets_dir: Path) -> str:
-    """Symlink image into report-local assets dir and return relative markdown ref."""
+    """Copy image into report-local assets dir and return relative markdown ref."""
     assets_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:12]
     target = assets_dir / f"{digest}{path.suffix.lower()}"
     if not target.exists():
-        os.symlink(path, target)
+        shutil.copy2(path, target)
     rel = target.relative_to(reports_root)
     return f'![]({rel.as_posix()})'
 
@@ -275,7 +274,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
 
     lines.append("## Latest comparison table")
     lines.append("")
-    lines.append("| algorithm_variant | bytes/card | Top-1 | Top-1 % | Top-3 | Top-3 % | Top-10 | Top-10 % |")
+    lines.append("| Algorithm | Bytes/Card | Top-1 | Top-1 % | Top-3 | Top-3 % | Top-10 | Top-10 % |")
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
 
     def _acc_pct(a: str) -> str:
@@ -326,7 +325,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             lines.append("")
         lines.append(f"### {v}")
         lines.append("")
-        lines.append("| top-k | correct | total | accuracy | bytes/card |")
+        lines.append("| Top-k | Correct | Total | Accuracy | Bytes/Card |")
         lines.append("|---:|---:|---:|---:|---:|")
         for r in sorted(by_variant[v], key=lambda x: int(float(x.get("topk", 0) or 0))):
             lines.append(f"| {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} | {r.get('bytes_per_card','-')} |")
@@ -401,22 +400,18 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             return f"{exp_score} (rank={true_rank})"
 
         lines.append("")
-        lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
+        lines.append("|  | Top-1 Miss | Top-3 Miss | Top-5 miss |")
         lines.append("|---|---|---|---|")
-        lines.append(f"| Input sample | {_input_meta(picks['top1'])} | {_input_meta(picks['top3'])} | {_input_meta(picks['top5'])} |")
-        lines.append(f"| Input image | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
-        lines.append("")
-        lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
+        lines.append(f"| Sample | {_input_meta(picks['top1'])} | {_input_meta(picks['top3'])} | {_input_meta(picks['top5'])} |")
+        lines.append(f"| | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
         lines.append("|---|---|---|---|")
-        lines.append(f"| Retrieved info | {_retrieved_meta(picks['top1'])} | {_retrieved_meta(picks['top3'])} | {_retrieved_meta(picks['top5'])} |")
-        lines.append(f"| Retrieved image | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
-        lines.append(f"| Retrieved score | {_retrieved_score(picks['top1'])} | {_retrieved_score(picks['top3'])} | {_retrieved_score(picks['top5'])} |")
-        lines.append("")
-        lines.append("|  | top-1 miss | top-3 miss | top-5 miss |")
+        lines.append(f"| Retrieved | {_retrieved_meta(picks['top1'])} | {_retrieved_meta(picks['top3'])} | {_retrieved_meta(picks['top5'])} |")
+        lines.append(f"|  | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
+        lines.append(f"| Score | {_retrieved_score(picks['top1'])} | {_retrieved_score(picks['top3'])} | {_retrieved_score(picks['top5'])} |")
         lines.append("|---|---|---|---|")
-        lines.append(f"| Expected info | {_expected_meta(picks['top1'])} | {_expected_meta(picks['top3'])} | {_expected_meta(picks['top5'])} |")
-        lines.append(f"| Expected image | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
-        lines.append(f"| Expected score | {_expected_score(picks['top1'])} | {_expected_score(picks['top3'])} | {_expected_score(picks['top5'])} |")
+        lines.append(f"| Expected | {_expected_meta(picks['top1'])} | {_expected_meta(picks['top3'])} | {_expected_meta(picks['top5'])} |")
+        lines.append(f"|  | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
+        lines.append(f"| Score | {_expected_score(picks['top1'])} | {_expected_score(picks['top3'])} | {_expected_score(picks['top5'])} |")
 
         fails = _find_failures_for_variant(runs, v, worst_n)
         lines.append("")
@@ -433,8 +428,6 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             lines.append("| (none yet) | - | - | - | - |")
         lines.append("")
 
-    # recommendations intentionally omitted
-
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     built_pdf: Path | None = None
@@ -444,7 +437,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             if shutil.which("tectonic"):
                 cmd.extend(["--pdf-engine", "tectonic"])
             # Tight margins + slightly smaller base font to reduce table overlap.
-            cmd.extend(["-V", "geometry:margin=0.35in", "-V", "fontsize=10pt"])
+            cmd.extend(["-V", "geometry:margin=0.15in", "-V", "fontsize=9pt"])
             subprocess.run(cmd, check=True)
             built_pdf = pdf_path
         except Exception:
