@@ -1,191 +1,187 @@
-# Evaluate retrieval performance of different vectorizers
-# Tests the ability to find similar cards given a query card
+"""
+Real-world retrieval evaluation using the Sol Ring dataset.
 
-import os
-import json
-import numpy as np
+Tests how well each hash method+size can identify a card from a real-world
+camera photo, searching against the full Scryfall reference database.
+
+Ground truth: the Scryfall card ID is embedded in each test image filename,
+e.g. 0afa0e33-..._solring_khc_20221219_153056.mp4-0000.jpg
+
+Usage:
+    cd 06_eval
+    python 01_eval_retrieval.py
+
+    # Run specific methods/sizes only:
+    python 01_eval_retrieval.py --methods phash --sizes 64 128
+
+    # Point at a different dataset:
+    python 01_eval_retrieval.py --dataset ~/claw/data/ccg_card_id/datasets/solring
+"""
+
+import argparse
+import re
+import sys
+import time
+from pathlib import Path
+
 import imagehash
+import numpy as np
+from PIL import Image
 from tqdm import tqdm
 
-def load_phash_vectors(vectors_file):
-    """Load pHash vectors from JSON file."""
-    with open(vectors_file, "r") as f:
-        vectors = json.load(f)
-    return vectors
+# Allow running from any directory
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ccg_card_id.config import cfg
+from ccg_card_id.search.brute_force import CardSearchDB
 
-def load_dinov2_vectors(vectors_file):
-    """Load DINOv2 vectors from npz file."""
-    data = np.load(vectors_file, allow_pickle=True)
-    card_ids = data["card_ids"].tolist()
-    embeddings = data["embeddings"]
-    # Create dict mapping card_id to embedding
-    vectors = {cid: emb for cid, emb in zip(card_ids, embeddings)}
-    return vectors
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
 
-def compute_recall_at_k(similarity_matrix, targets, k=5):
-    """
-    Compute Recall@K metric.
-    
-    Args:
-        similarity_matrix: (n_queries x n_gallery) similarity scores
-        targets: Ground truth indices for each query
-        k: Number of top results to consider
-    
-    Returns:
-        Recall@K score
-    """
-    # Get top-k indices for each query
-    top_k_indices = np.argsort(-similarity_matrix, axis=1)[:, :k]
-    
-    # Check if target is in top-k for each query
-    hits = 0
-    for i, target_idx in enumerate(targets):
-        if target_idx in top_k_indices[i]:
-            hits += 1
-    
-    return hits / len(targets)
+DEFAULT_DATASET = Path.home() / "claw" / "data" / "ccg_card_id" / "datasets" / "solring"
+DEFAULT_METHODS = ["phash", "whash_db4"]
+DEFAULT_SIZES = [32, 64, 128, 256]
 
-def eval_phash_retrieval(vectors, query_ids, gallery_ids):
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def extract_card_id(filename: str) -> str | None:
+    """Extract the Scryfall UUID from a filename like '0afa0e33-..._solring_khc_....jpg'."""
+    m = UUID_RE.search(filename)
+    return m.group(0) if m else None
+
+
+def hash_image(img_path: Path, method: str, hash_size: int) -> imagehash.ImageHash | None:
+    """Hash a single image. Returns None on error."""
+    try:
+        img = Image.open(img_path).convert("RGB")
+        if method == "phash":
+            return imagehash.phash(img, hash_size=hash_size)
+        elif method == "whash_db4":
+            return imagehash.whash(img, hash_size=hash_size, mode="db4")
+        elif method == "dhash":
+            return imagehash.dhash(img, hash_size=hash_size)
+        elif method == "ahash":
+            return imagehash.average_hash(img, hash_size=hash_size)
+        else:
+            raise ValueError(f"Unknown hash method: {method!r}")
+    except Exception as e:
+        print(f"  Warning: could not hash {img_path.name}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Eval
+# ---------------------------------------------------------------------------
+
+def run_eval(dataset_dir: Path, methods: list[str], sizes: list[int]) -> dict:
     """
-    Evaluate pHash retrieval performance.
-    Returns similarity matrix where lower distance = more similar.
+    Run retrieval eval for each (method, size) combination.
+
+    Returns a dict: {(method, size): {"correct": int, "total": int, "accuracy": float}}
     """
-    n_queries = len(query_ids)
-    n_gallery = len(gallery_ids)
-    similarity_matrix = np.zeros((n_queries, n_gallery))
-    
-    for i, q_id in enumerate(query_ids):
-        if q_id not in vectors:
-            continue
-        q_hash = imagehash.hex_to_hash(vectors[q_id])
-        
-        for j, g_id in enumerate(gallery_ids):
-            if g_id not in vectors:
-                similarity_matrix[i, j] = 999  # Max distance for missing
+    test_dir = dataset_dir / "04_data" / "aligned"
+    if not test_dir.exists():
+        sys.exit(f"Test image directory not found: {test_dir}")
+
+    test_images = sorted(p for p in test_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
+    if not test_images:
+        sys.exit(f"No images found in {test_dir}")
+
+    print(f"Found {len(test_images)} test images across "
+          f"{len({extract_card_id(p.name) for p in test_images} - {None})} unique cards.\n")
+
+    results = {}
+
+    for method in methods:
+        for size in sizes:
+            vectors_path = cfg.vectors_file(method, size)
+            if not vectors_path.exists():
+                print(f"[{method}@{size}] Skipping — vector file not found: {vectors_path}")
                 continue
-            g_hash = imagehash.hex_to_hash(vectors[g_id])
-            # Hamming distance (lower is better)
-            distance = q_hash - g_hash
-            # Convert to similarity (higher is better)
-            similarity_matrix[i, j] = 64 - distance  # Max hamming distance is 64
-    
-    return similarity_matrix
 
-def eval_dinov2_retrieval(vectors, query_ids, gallery_ids):
-    """
-    Evaluate DINOv2 retrieval performance using cosine similarity.
-    Returns similarity matrix.
-    """
-    # Build query and gallery matrices
-    query_embeddings = []
-    gallery_embeddings = []
-    
-    for q_id in query_ids:
-        if q_id in vectors:
-            query_embeddings.append(vectors[q_id])
-        else:
-            query_embeddings.append(np.zeros(vectors[list(vectors.keys())[0]].shape))
-    
-    for g_id in gallery_ids:
-        if g_id in vectors:
-            gallery_embeddings.append(vectors[g_id])
-        else:
-            gallery_embeddings.append(np.zeros(vectors[list(vectors.keys())[0]].shape))
-    
-    query_embeddings = np.array(query_embeddings)
-    gallery_embeddings = np.array(gallery_embeddings)
-    
-    # Normalize embeddings
-    query_norm = np.linalg.norm(query_embeddings, axis=1, keepdims=True)
-    gallery_norm = np.linalg.norm(gallery_embeddings, axis=1, keepdims=True)
-    
-    query_embeddings = query_embeddings / (query_norm + 1e-8)
-    gallery_embeddings = gallery_embeddings / (gallery_norm + 1e-8)
-    
-    # Compute cosine similarity
-    similarity_matrix = np.dot(query_embeddings, gallery_embeddings.T)
-    
-    return similarity_matrix
+            print(f"[{method}@{size}] Loading reference database ({vectors_path.stat().st_size // 1_000_000}MB)...")
+            t0 = time.time()
+            db = CardSearchDB.from_phash_json(vectors_path)
+            print(f"[{method}@{size}] Loaded {len(db):,} cards in {time.time()-t0:.1f}s")
 
-def create_test_set(all_card_ids, num_queries=100):
-    """
-    Create a simple test set where query and gallery overlap.
-    In a real scenario, you'd have separate sets or duplicates.
-    """
-    np.random.seed(42)
-    query_ids = list(np.random.choice(all_card_ids, size=min(num_queries, len(all_card_ids)), replace=False))
-    
-    # For this simple test, gallery includes all cards
-    gallery_ids = all_card_ids
-    
-    # Target indices: where each query card appears in gallery
-    targets = [gallery_ids.index(qid) if qid in gallery_ids else -1 for qid in query_ids]
-    
-    return query_ids, gallery_ids, targets
+            correct = 0
+            total = 0
+            failures = []
+
+            for img_path in tqdm(test_images, desc=f"{method}@{size}", unit="img"):
+                true_id = extract_card_id(img_path.name)
+                if true_id is None:
+                    continue
+
+                h = hash_image(img_path, method, size)
+                if h is None:
+                    continue
+
+                query_vec = h.hash.flatten().astype(np.int8)
+                results_top1 = db.search(query_vec, k=1)
+
+                total += 1
+                if results_top1 and results_top1[0].card_id == true_id:
+                    correct += 1
+                else:
+                    best = results_top1[0] if results_top1 else None
+                    failures.append((img_path.name, true_id, best.card_id if best else "?", best.score if best else -1))
+
+            accuracy = correct / total if total > 0 else 0.0
+            results[(method, size)] = {"correct": correct, "total": total, "accuracy": accuracy}
+
+            print(f"[{method}@{size}] Accuracy: {correct}/{total} = {accuracy*100:.1f}%")
+            if failures:
+                print(f"  First few failures:")
+                for fname, true_id, pred_id, score in failures[:3]:
+                    print(f"    {fname}")
+                    print(f"      true: {true_id}")
+                    print(f"      pred: {pred_id}  (hamming dist: {score:.0f})")
+            print()
+
+    return results
+
+
+def print_summary(results: dict) -> None:
+    if not results:
+        print("No results.")
+        return
+
+    print("=" * 60)
+    print(f"{'Method':<14} {'Size':>6}  {'Correct':>8}  {'Total':>8}  {'Accuracy':>9}")
+    print("-" * 60)
+    for (method, size), r in sorted(results.items()):
+        print(f"{method:<14} {size:>6}  {r['correct']:>8}  {r['total']:>8}  {r['accuracy']*100:>8.1f}%")
+    print("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def main():
-    print("=" * 60)
-    print("Retrieval Evaluation")
-    print("=" * 60)
-    
-    # Paths to vector files
-    phash_vectors_file = "../04_vectorize/phash/cache/scryfall_phash_vectors.json"
-    dinov2_vectors_file = "../04_vectorize/dinov2/cache/scryfall_dinov2_vectors.npz"
-    
-    # Load vectors
-    results = {}
-    
-    if os.path.exists(phash_vectors_file):
-        print("\nEvaluating pHash...")
-        phash_vectors = load_phash_vectors(phash_vectors_file)
-        all_card_ids = list(phash_vectors.keys())
-        
-        query_ids, gallery_ids, targets = create_test_set(all_card_ids, num_queries=100)
-        similarity_matrix = eval_phash_retrieval(phash_vectors, query_ids, gallery_ids)
-        
-        recall_at_1 = compute_recall_at_k(similarity_matrix, targets, k=1)
-        recall_at_5 = compute_recall_at_k(similarity_matrix, targets, k=5)
-        recall_at_10 = compute_recall_at_k(similarity_matrix, targets, k=10)
-        
-        results["pHash"] = {
-            "Recall@1": recall_at_1,
-            "Recall@5": recall_at_5,
-            "Recall@10": recall_at_10,
-        }
-        
-        print(f"pHash Recall@1: {recall_at_1:.4f}")
-        print(f"pHash Recall@5: {recall_at_5:.4f}")
-        print(f"pHash Recall@10: {recall_at_10:.4f}")
-    
-    if os.path.exists(dinov2_vectors_file):
-        print("\nEvaluating DINOv2...")
-        dinov2_vectors = load_dinov2_vectors(dinov2_vectors_file)
-        all_card_ids = list(dinov2_vectors.keys())
-        
-        query_ids, gallery_ids, targets = create_test_set(all_card_ids, num_queries=100)
-        similarity_matrix = eval_dinov2_retrieval(dinov2_vectors, query_ids, gallery_ids)
-        
-        recall_at_1 = compute_recall_at_k(similarity_matrix, targets, k=1)
-        recall_at_5 = compute_recall_at_k(similarity_matrix, targets, k=5)
-        recall_at_10 = compute_recall_at_k(similarity_matrix, targets, k=10)
-        
-        results["DINOv2"] = {
-            "Recall@1": recall_at_1,
-            "Recall@5": recall_at_5,
-            "Recall@10": recall_at_10,
-        }
-        
-        print(f"DINOv2 Recall@1: {recall_at_1:.4f}")
-        print(f"DINOv2 Recall@5: {recall_at_5:.4f}")
-        print(f"DINOv2 Recall@10: {recall_at_10:.4f}")
-    
-    # Save results
-    if results:
-        output_file = "./cache/retrieval_results.json"
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        with open(output_file, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"\nResults saved to {output_file}")
+    parser = argparse.ArgumentParser(description="CCG card retrieval evaluation")
+    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET,
+                        help=f"Path to dataset directory (default: {DEFAULT_DATASET})")
+    parser.add_argument("--methods", nargs="+", default=DEFAULT_METHODS,
+                        choices=["phash", "whash_db4", "dhash", "ahash"],
+                        help="Hash methods to evaluate")
+    parser.add_argument("--sizes", nargs="+", type=int, default=DEFAULT_SIZES,
+                        help="Hash grid sizes to evaluate")
+    args = parser.parse_args()
+
+    print(f"Dataset: {args.dataset}")
+    print(f"Methods: {args.methods}")
+    print(f"Sizes:   {args.sizes}\n")
+
+    results = run_eval(args.dataset, args.methods, args.sizes)
+    print_summary(results)
+
 
 if __name__ == "__main__":
     main()
