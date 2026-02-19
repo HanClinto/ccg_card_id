@@ -215,6 +215,7 @@ __marimo__/
 
 # Project specific
 data/
+data_cache/
 models/
 results/
 *.npz

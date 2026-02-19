@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ccg_card_id"
+version = "0.1.0"
+description = "Pipeline for visual identification of collectible card game cards"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "tqdm",
+    "requests",
+    "Pillow",
+    "imagehash",
+    "numpy",
+    "opencv-contrib-python",
+    "orjson",
+    "ClintUtils",
+]
+
+[project.optional-dependencies]
+dinov2 = [
+    "torch",
+    "transformers",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ccg_card_id*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

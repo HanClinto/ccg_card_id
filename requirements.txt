@@ -1,5 +1,17 @@
+# Core pipeline dependencies
 tqdm
 requests
 orjson
-opencv-contrib-python
+numpy
+Pillow
 imagehash
+opencv-contrib-python
+python-dateutil
+
+# ClintUtils (sibling repo — install separately with: pip install -e ../ClintUtils)
+# ClintUtils
+
+# Optional: DINOv2 embeddings
+# pip install -e ".[dinov2]" or manually:
+# torch
+# transformers
