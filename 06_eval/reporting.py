@@ -31,7 +31,7 @@ def _json_default(obj: Any) -> Any:
 
 
 def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fields = ["algorithm_variant", "topk", "correct", "total", "accuracy"]
+    fields = ["algorithm_variant", "topk", "correct", "total", "accuracy", "bytes_per_card"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
@@ -61,11 +61,11 @@ def write_algorithm_markdown(
     lines.append("")
     lines.append("## Accuracy")
     lines.append("")
-    lines.append("| top-k | correct | total | accuracy |")
-    lines.append("|---:|---:|---:|---:|")
+    lines.append("| top-k | correct | total | accuracy | bytes/card |")
+    lines.append("|---:|---:|---:|---:|---:|")
     for r in sorted(summary_rows, key=lambda x: x["topk"]):
         lines.append(
-            f"| {r['topk']} | {r['correct']} | {r['total']} | {r['accuracy'] * 100:.2f}% |"
+            f"| {r['topk']} | {r['correct']} | {r['total']} | {r['accuracy'] * 100:.2f}% | {r.get('bytes_per_card','-')} |"
         )
 
     lines.append("")
@@ -94,12 +94,12 @@ def write_overview_markdown(path: Path, summary_rows: list[dict[str, Any]]) -> N
     lines: list[str] = []
     lines.append("# Evaluation overview")
     lines.append("")
-    lines.append("| algorithm_variant | top-k | correct | total | accuracy |")
-    lines.append("|---|---:|---:|---:|---:|")
+    lines.append("| algorithm_variant | top-k | correct | total | accuracy | bytes/card |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
 
     for row in sorted(summary_rows, key=lambda r: (r["algorithm_variant"], r["topk"])):
         lines.append(
-            f"| {row['algorithm_variant']} | {row['topk']} | {row['correct']} | {row['total']} | {row['accuracy'] * 100:.2f}% |"
+            f"| {row['algorithm_variant']} | {row['topk']} | {row['correct']} | {row['total']} | {row['accuracy'] * 100:.2f}% | {row.get('bytes_per_card','-')} |"
         )
 
     lines.append("")
@@ -136,6 +136,7 @@ def update_central_result_csvs(
         "correct",
         "total",
         "accuracy",
+        "bytes_per_card",
     ]
 
     history_rows: list[dict[str, Any]] = []
@@ -156,6 +157,7 @@ def update_central_result_csvs(
             "correct": r.get("correct"),
             "total": r.get("total"),
             "accuracy": r.get("accuracy"),
+            "bytes_per_card": r.get("bytes_per_card"),
         })
 
     history_rows.extend(new_rows)

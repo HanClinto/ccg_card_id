@@ -50,6 +50,11 @@ DEFAULT_OUTPUT_ROOT = cfg.data_dir / "results" / "eval"
 DEFAULT_WORST_N = 20
 DEFAULT_TOP_K = [1, 3, 10]
 
+
+def hash_bytes_per_card(hash_size: int) -> int:
+    # hash_size x hash_size bits, packed to bytes
+    return (hash_size * hash_size) // 8
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -298,6 +303,7 @@ def persist_results(
             "correct": r["correct"],
             "total": r["total"],
             "accuracy": r["accuracy"],
+            "bytes_per_card": hash_bytes_per_card(size),
         }
         for (method, size, k), r in sorted(results.items(), key=lambda x: (x[0][0], x[0][1], x[0][2]))
     ]

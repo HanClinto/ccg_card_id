@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Consolidate eval run artifacts into a shareable Markdown/PDF report.
+
+Inputs:
+  - per-run folders under CCG_DATA_DIR/results/eval/<run_id>
+  - summary.csv + failures.jsonl in each run folder
+  - optional latest_results.csv/history_results.csv in eval root
+
+Outputs:
+  - markdown report
+  - optional PDF (if pandoc is available)
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+import json
+import shutil
+import subprocess
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ccg_card_id.config import cfg
+
+
+DEFAULT_RESULTS_ROOT = cfg.data_dir / "results" / "eval"
+DEFAULT_REPORTS_ROOT = cfg.data_dir / "results" / "reports"
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    rows: list[dict] = []
+    if not path.exists():
+        return rows
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                pass
+    return rows
+
+
+def _collect_runs(results_root: Path) -> list[Path]:
+    runs: list[Path] = []
+    if not results_root.exists():
+        return runs
+    for p in sorted(results_root.iterdir()):
+        if not p.is_dir() or p.name == "cache":
+            continue
+        if (p / "summary.csv").exists():
+            runs.append(p)
+    return runs
+
+
+def _latest_metrics(results_root: Path, runs: list[Path]) -> list[dict]:
+    latest_csv = results_root / "latest_results.csv"
+    rows = _read_csv(latest_csv)
+    if rows:
+        return rows
+
+    # fallback: latest row per (algorithm_variant, topk, dataset) from run summaries
+    agg: dict[tuple[str, str, str], dict] = {}
+    for run in runs:
+        summary = _read_csv(run / "summary.csv")
+        for r in summary:
+            key = (r.get("algorithm_variant", ""), r.get("topk", ""), "")
+            row = {
+                "run_id": run.name,
+                "algorithm_variant": r.get("algorithm_variant", ""),
+                "topk": r.get("topk", ""),
+                "correct": r.get("correct", ""),
+                "total": r.get("total", ""),
+                "accuracy": r.get("accuracy", ""),
+            }
+            agg[key] = row
+    return list(agg.values())
+
+
+def _find_failures_for_variant(runs: list[Path], variant: str, n: int) -> list[dict]:
+    # prefer most recent runs first
+    out: list[dict] = []
+    for run in reversed(runs):
+        for row in _read_jsonl(run / "failures.jsonl"):
+            if row.get("algorithm_variant") == variant:
+                out.append(row)
+        if len(out) >= n:
+            break
+    return out[:n]
+
+
+def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tuple[Path, Path | None]:
+    reports_root.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+    md_path = reports_root / f"eval_report_{ts}.md"
+    pdf_path = reports_root / f"eval_report_{ts}.pdf"
+
+    runs = _collect_runs(results_root)
+    latest = _latest_metrics(results_root, runs)
+
+    lines: list[str] = []
+    lines.append(f"# CCG Card ID Evaluation Report ({ts})")
+    lines.append("")
+    lines.append(f"- Results root: `{results_root}`")
+    lines.append(f"- Run folders discovered: **{len(runs)}**")
+    lines.append("")
+
+    lines.append("## Latest comparison table")
+    lines.append("")
+    lines.append("| algorithm_variant | top-k | correct | total | accuracy | bytes/card |")
+    lines.append("|---|---:|---:|---:|---:|---:|")
+
+    def _acc_pct(a: str) -> str:
+        try:
+            return f"{float(a)*100:.2f}%"
+        except Exception:
+            return "-"
+
+    for r in sorted(latest, key=lambda x: (x.get("algorithm_variant", ""), int(float(x.get("topk", 0) or 0)))):
+        lines.append(
+            f"| {r.get('algorithm_variant','')} | {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} | {r.get('bytes_per_card','-')} |"
+        )
+
+    lines.append("")
+    lines.append("## Algorithm breakdowns + representative failures")
+    lines.append("")
+
+    variants = sorted({r.get("algorithm_variant", "") for r in latest if r.get("algorithm_variant")})
+    by_variant = defaultdict(list)
+    for r in latest:
+        by_variant[r.get("algorithm_variant", "")].append(r)
+
+    for v in variants:
+        lines.append(f"### {v}")
+        lines.append("")
+        lines.append("Accuracy snapshot:")
+        lines.append("")
+        lines.append("| top-k | correct | total | accuracy |")
+        lines.append("|---:|---:|---:|---:|")
+        for r in sorted(by_variant[v], key=lambda x: int(float(x.get("topk", 0) or 0))):
+            lines.append(f"| {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} |")
+
+        fails = _find_failures_for_variant(runs, v, worst_n)
+        lines.append("")
+        lines.append(f"Top {len(fails)} sampled failures:")
+        lines.append("")
+        lines.append("| image_path (relative) | true_id | predicted_id | score | true_rank |")
+        lines.append("|---|---|---|---:|---:|")
+        if fails:
+            for f in fails:
+                lines.append(
+                    f"| {f.get('image_path','')} | {f.get('true_id','')} | {f.get('predicted_id','')} | {f.get('score','')} | {f.get('true_rank','-')} |"
+                )
+        else:
+            lines.append("| (none yet) | - | - | - | - |")
+        lines.append("")
+
+    lines.append("## Recommendations")
+    lines.append("")
+    lines.append("- Use top-1 for strict identification confidence; top-3/top-10 for operator-assist workflows.")
+    lines.append("- Keep brute-force as ground-truth benchmark path for deterministic comparisons.")
+    lines.append("- Continue collecting failure examples for lighting/angle classes to guide pre-processing improvements.")
+
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    built_pdf: Path | None = None
+    if shutil.which("pandoc"):
+        try:
+            subprocess.run([
+                "pandoc",
+                str(md_path),
+                "-o",
+                str(pdf_path),
+            ], check=True)
+            built_pdf = pdf_path
+        except Exception:
+            built_pdf = None
+
+    return md_path, built_pdf
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Consolidate eval artifacts into report markdown/pdf")
+    p.add_argument("--results-root", type=Path, default=DEFAULT_RESULTS_ROOT)
+    p.add_argument("--reports-root", type=Path, default=DEFAULT_REPORTS_ROOT)
+    p.add_argument("--worst-n", type=int, default=8)
+    args = p.parse_args()
+
+    md, pdf = build_report(args.results_root, args.reports_root, args.worst_n)
+    print(f"Markdown report: {md}")
+    if pdf:
+        print(f"PDF report:      {pdf}")
+    else:
+        print("PDF report:      skipped (pandoc not available or conversion failed)")
+
+
+if __name__ == "__main__":
+    main()
