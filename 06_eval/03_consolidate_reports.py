@@ -132,7 +132,7 @@ def _load_variant_cache_rows(results_root: Path, variant: str) -> list[dict]:
 
 def _pick_failure_examples(cache_rows: list[dict]) -> dict[str, dict | None]:
     # Prefer unique rows across categories when possible
-    buckets = {"top1": None, "top3": None, "top5": None}
+    buckets = {"top1": None, "top3": None, "top10": None}
 
     def rank(r: dict) -> int:
         tr = r.get("true_rank")
@@ -146,8 +146,8 @@ def _pick_failure_examples(cache_rows: list[dict]) -> dict[str, dict | None]:
             buckets["top1"] = r
         if buckets["top3"] is None and 4 <= tr <= 5:
             buckets["top3"] = r
-        if buckets["top5"] is None and 6 <= tr <= 10:
-            buckets["top5"] = r
+        if buckets["top10"] is None and 6 <= tr <= 10:
+            buckets["top10"] = r
 
     # relaxed fallback
     for r in sorted_rows:
@@ -156,8 +156,8 @@ def _pick_failure_examples(cache_rows: list[dict]) -> dict[str, dict | None]:
             buckets["top1"] = r
         if buckets["top3"] is None and tr > 3:
             buckets["top3"] = r
-        if buckets["top5"] is None and tr > 5:
-            buckets["top5"] = r
+        if buckets["top10"] is None and tr > 5:
+            buckets["top10"] = r
 
     return buckets
 
@@ -325,10 +325,6 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
             lines.append("")
         lines.append(f"### {v}")
         lines.append("")
-        lines.append("| Top-k | Correct | Total | Accuracy | Bytes/Card |")
-        lines.append("|---:|---:|---:|---:|---:|")
-        for r in sorted(by_variant[v], key=lambda x: int(float(x.get("topk", 0) or 0))):
-            lines.append(f"| {r.get('topk','')} | {r.get('correct','')} | {r.get('total','')} | {_acc_pct(r.get('accuracy',''))} | {r.get('bytes_per_card','-')} |")
 
         cache_rows = _load_variant_cache_rows(results_root, v)
         picks = _pick_failure_examples(cache_rows)
@@ -399,19 +395,26 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
                 return f"{exp_score}"
             return f"{exp_score} (rank={true_rank})"
 
+        rows_by_k = {int(float(r.get("topk", 0) or 0)): r for r in by_variant.get(v, []) if str(r.get("topk", "")).strip()}
+
+        def _acc_value(k: int) -> str:
+            r = rows_by_k.get(k)
+            if not r:
+                return "-"
+            correct = r.get("correct", "-")
+            total = r.get("total", "-")
+            pct = _acc_pct(str(r.get("accuracy", "")))
+            return f"{correct} / {total} ({pct})"
+
         lines.append("")
-        lines.append("|  | Top-1 Miss | Top-3 Miss | Top-5 miss |")
+        lines.append("| **Top-k Acc** | **Example Failure** | **Retrieved** | **Expected** |")
         lines.append("|---|---|---|---|")
-        lines.append(f"| Sample | {_input_meta(picks['top1'])} | {_input_meta(picks['top3'])} | {_input_meta(picks['top5'])} |")
-        lines.append(f"| | {_input_img(picks['top1'])} | {_input_img(picks['top3'])} | {_input_img(picks['top5'])} |")
-        lines.append("|---|---|---|---|")
-        lines.append(f"| Retrieved | {_retrieved_meta(picks['top1'])} | {_retrieved_meta(picks['top3'])} | {_retrieved_meta(picks['top5'])} |")
-        lines.append(f"|  | {_retrieved_img(picks['top1'])} | {_retrieved_img(picks['top3'])} | {_retrieved_img(picks['top5'])} |")
-        lines.append(f"| Score | {_retrieved_score(picks['top1'])} | {_retrieved_score(picks['top3'])} | {_retrieved_score(picks['top5'])} |")
-        lines.append("|---|---|---|---|")
-        lines.append(f"| Expected | {_expected_meta(picks['top1'])} | {_expected_meta(picks['top3'])} | {_expected_meta(picks['top5'])} |")
-        lines.append(f"|  | {_expected_img(picks['top1'])} | {_expected_img(picks['top3'])} | {_expected_img(picks['top5'])} |")
-        lines.append(f"| Score | {_expected_score(picks['top1'])} | {_expected_score(picks['top3'])} | {_expected_score(picks['top5'])} |")
+        order = [("top1", 1), ("top3", 3), ("top5", 10)]
+        for key, k in order:
+            row_pick = picks.get(key)
+            lines.append(f"| Top-{k}: {_acc_value(k)} | {_input_meta(row_pick)} | {_retrieved_meta(row_pick)} | {_expected_meta(row_pick)} |")
+            lines.append(f"|  | {_input_img(row_pick)} | {_retrieved_img(row_pick)} | {_expected_img(row_pick)} |")
+            lines.append(f"|  |  | score={_retrieved_score(row_pick)} | score={_expected_score(row_pick)} |")
 
         fails = _find_failures_for_variant(runs, v, worst_n)
         lines.append("")
