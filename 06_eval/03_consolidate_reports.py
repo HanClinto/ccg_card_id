@@ -122,41 +122,80 @@ def _label_for_card_id(card_id: str, card_index: dict[str, dict[str, str]]) -> s
 
 def _load_variant_cache_rows(results_root: Path, variant: str) -> list[dict]:
     rows: list[dict] = []
+
+    # Hash per-image cache rows
     for jf in (results_root / "cache" / "hash_retrieval").rglob("*.jsonl"):
         recs = _read_jsonl(jf)
         for r in recs:
             if r.get("algorithm_variant") == variant:
                 rows.append(r)
+
+    # DINO per-image cache rows (if present)
+    for jf in (results_root / "cache" / "dinov2_retrieval").rglob("*.jsonl"):
+        recs = _read_jsonl(jf)
+        for r in recs:
+            if r.get("algorithm_variant") == variant:
+                rows.append(r)
+
+    # Fallback: derive from run failures.jsonl (top-1 misses)
+    if not rows:
+        for run in _collect_runs(results_root):
+            for r in _read_jsonl(run / "failures.jsonl"):
+                if r.get("algorithm_variant") != variant:
+                    continue
+                pred = r.get("predicted_id")
+                rows.append({
+                    "algorithm_variant": variant,
+                    "dataset": str(cfg.data_dir / "datasets" / "solring"),
+                    "image_key": r.get("image_path", ""),
+                    "true_id": r.get("true_id"),
+                    "top_ids": [pred] if pred else [],
+                    "top_scores": [r.get("score")] if r.get("score") is not None else [],
+                    "true_rank": r.get("true_rank"),
+                })
     return rows
 
 
 def _pick_failure_examples(cache_rows: list[dict]) -> dict[str, dict | None]:
-    # Prefer unique rows across categories when possible
     buckets = {"top1": None, "top3": None, "top10": None}
 
-    def rank(r: dict) -> int:
+    def to_bool(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in {"1", "true", "yes"}
+        return None
+
+    def flags(r: dict):
+        c1 = to_bool(r.get("correct_top1"))
+        c3 = to_bool(r.get("correct_top3"))
+        c10 = to_bool(r.get("correct_top10"))
         tr = r.get("true_rank")
-        return int(tr) if isinstance(tr, int) or (isinstance(tr, str) and tr.isdigit()) else 9999
+        tr_i = int(tr) if isinstance(tr, int) or (isinstance(tr, str) and tr.isdigit()) else None
+        if c1 is None and tr_i is not None:
+            c1 = tr_i <= 1
+        if c3 is None and tr_i is not None:
+            c3 = tr_i <= 3
+        if c10 is None and tr_i is not None:
+            c10 = tr_i <= 10
+        return c1, c3, c10
 
-    sorted_rows = sorted(cache_rows, key=rank)
-
-    for r in sorted_rows:
-        tr = rank(r)
-        if buckets["top1"] is None and 2 <= tr <= 3:
+    for r in cache_rows:
+        c1, c3, c10 = flags(r)
+        if buckets["top1"] is None and c1 is False and c3 is True:
             buckets["top1"] = r
-        if buckets["top3"] is None and 4 <= tr <= 5:
+        if buckets["top3"] is None and c3 is False and c10 is True:
             buckets["top3"] = r
-        if buckets["top10"] is None and 6 <= tr <= 10:
+        if buckets["top10"] is None and c10 is False:
             buckets["top10"] = r
 
-    # relaxed fallback
-    for r in sorted_rows:
-        tr = rank(r)
-        if buckets["top1"] is None and tr > 1:
+    for r in cache_rows:
+        c1, c3, c10 = flags(r)
+        if buckets["top1"] is None and c1 is False:
             buckets["top1"] = r
-        if buckets["top3"] is None and tr > 3:
+        if buckets["top3"] is None and c3 is False:
             buckets["top3"] = r
-        if buckets["top10"] is None and tr > 5:
+        if buckets["top10"] is None and (c10 is False or c10 is None):
             buckets["top10"] = r
 
     return buckets
@@ -329,11 +368,16 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         cache_rows = _load_variant_cache_rows(results_root, v)
         picks = _pick_failure_examples(cache_rows)
 
+        def _row_image_key(row: dict | None) -> str:
+            if not row:
+                return ""
+            return str(row.get("image_key") or row.get("image_path") or "")
+
         def _input_img(row: dict | None) -> str:
             if not row:
                 return "-"
             ds = Path(row.get("dataset", cfg.data_dir / "datasets" / "solring"))
-            image_key = str(row.get("image_key", ""))
+            image_key = _row_image_key(row)
             p = ds / image_key
             return _img_md(p, reports_root, assets_dir) if p.exists() else image_key
 
@@ -355,7 +399,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         def _input_meta(row: dict | None) -> str:
             if not row:
                 return "-"
-            image_key = str(row.get("image_key", ""))
+            image_key = _row_image_key(row)
             return _parse_input_label(image_key, card_index)
 
         def _retrieved_meta(row: dict | None) -> str:
@@ -409,7 +453,7 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         lines.append("")
         lines.append("| **Top-k Acc** | **Example Failure** | **Retrieved** | **Expected** |")
         lines.append("|---|---|---|---|")
-        order = [("top1", 1), ("top3", 3), ("top5", 10)]
+        order = [("top1", 1), ("top3", 3), ("top10", 10)]
         for key, k in order:
             row_pick = picks.get(key)
             lines.append(f"| Top-{k}: {_acc_value(k)} | {_input_meta(row_pick)} | {_retrieved_meta(row_pick)} | {_expected_meta(row_pick)} |")
