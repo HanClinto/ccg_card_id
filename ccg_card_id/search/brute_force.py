@@ -23,12 +23,15 @@ Typical usage:
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import imagehash
 import numpy as np
+
+_POPCOUNT_U8 = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(axis=1).astype(np.uint8)
 
 
 @dataclass
@@ -74,19 +77,37 @@ class CardSearchDB:
         """
         Load from a JSON file mapping card_id → perceptual hash hex string.
 
-        Supports any hash size — the file names follow the convention
-        default_cards_{method}_{hash_size}.json where hash_size is the
-        grid dimension (e.g. 64 → 64×64 = 4096 bits per hash).
-
-        Converts hex strings to flat int8 arrays for Hamming search.
+        Memory-optimized: store hashes as packed bytes (uint8) instead of
+        unpacked bits (int8). This keeps large hash sizes (e.g. 256x256 bits)
+        practical in RAM.
         """
         path = Path(path)
         with open(path, "r", encoding="utf-8") as f:
             raw: dict[str, str] = json.load(f)
 
         card_ids = list(raw.keys())
-        arrays = [imagehash.hex_to_hash(h).hash.flatten().astype(np.int8) for h in raw.values()]
-        vectors = np.stack(arrays)  # shape: (n, hash_size²)
+        hex_values = list(raw.values())
+        if not hex_values:
+            return cls([], np.zeros((0, 0), dtype=np.uint8), mode="hamming")
+
+        n = len(hex_values)
+        # Hash strings may occasionally miss leading zeros (or contain outliers).
+        # Use the most common hex length as canonical size.
+        length_counts = Counter(len(h) for h in hex_values)
+        canon_hex_len = length_counts.most_common(1)[0][0]
+        if canon_hex_len % 2 == 1:
+            canon_hex_len += 1
+        bytes_per_hash = canon_hex_len // 2
+
+        vectors = np.empty((n, bytes_per_hash), dtype=np.uint8)
+        for i, h in enumerate(hex_values):
+            h_norm = h.strip()
+            if len(h_norm) < canon_hex_len:
+                h_norm = h_norm.zfill(canon_hex_len)
+            elif len(h_norm) > canon_hex_len:
+                h_norm = h_norm[-canon_hex_len:]
+            vectors[i] = np.frombuffer(bytes.fromhex(h_norm), dtype=np.uint8)
+
         return cls(card_ids, vectors, mode="hamming")
 
     @classmethod
@@ -156,11 +177,12 @@ class CardSearchDB:
                 for i in range(len(queries))
             ]
         else:
-            distances = self._hamming_distance_matrix(queries)
+            q = self._prepare_hamming_queries(queries)
+            distances = self._hamming_distance_matrix(q)
             top_k_idx = np.argsort(distances, axis=1)[:, :k]
             return [
                 [SearchResult(self.card_ids[j], float(distances[i, j])) for j in top_k_idx[i]]
-                for i in range(len(queries))
+                for i in range(len(q))
             ]
 
     # ------------------------------------------------------------------
@@ -175,8 +197,16 @@ class CardSearchDB:
 
     def _hamming_distance_matrix(self, queries: np.ndarray) -> np.ndarray:
         """(n_queries, n_gallery) Hamming distance, lower is better."""
-        # XOR each query against all gallery rows, then sum differing bits
-        # Works for int8 arrays: nonzero count == Hamming distance
+        # Packed mode (uint8): XOR bytes then popcount bits.
+        if self.vectors.dtype == np.uint8:
+            out = np.empty((len(queries), len(self.card_ids)), dtype=np.int32)
+            for i in range(len(queries)):
+                q = queries[i]
+                xor = np.bitwise_xor(self.vectors, q)
+                out[i] = _POPCOUNT_U8[xor].sum(axis=1, dtype=np.int32)
+            return out
+
+        # Legacy unpacked mode (int8 bits).
         return np.array(
             [np.sum(queries[i] != self.vectors, axis=1) for i in range(len(queries))],
             dtype=np.int32,
@@ -187,8 +217,36 @@ class CardSearchDB:
         top_k = np.argsort(-scores)[:k]
         return [SearchResult(self.card_ids[i], float(scores[i])) for i in top_k]
 
+    def _prepare_hamming_queries(self, queries: np.ndarray) -> np.ndarray:
+        """Convert unpacked bit queries to packed-byte queries when needed."""
+        q = np.asarray(queries)
+        if q.ndim == 1:
+            q = q.reshape(1, -1)
+
+        if self.vectors.dtype != np.uint8:
+            return q
+
+        # Already packed.
+        if q.shape[1] == self.vectors.shape[1] and q.dtype == np.uint8:
+            return q
+
+        # Unpacked bits -> pack to bytes (allow non-multiple-of-8 bit lengths).
+        target_bits = self.vectors.shape[1] * 8
+        if q.shape[1] <= target_bits:
+            q_u8 = (q > 0).astype(np.uint8)
+            if q_u8.shape[1] < target_bits:
+                pad = np.zeros((q_u8.shape[0], target_bits - q_u8.shape[1]), dtype=np.uint8)
+                q_u8 = np.concatenate([q_u8, pad], axis=1)
+            return np.packbits(q_u8, axis=1)
+
+        raise ValueError(
+            f"Hamming query dim mismatch: got {q.shape[1]}, expected <= {self.vectors.shape[1] * 8} bits "
+            f"or {self.vectors.shape[1]} packed bytes"
+        )
+
     def _search_hamming(self, query: np.ndarray, k: int) -> list[SearchResult]:
-        distances = self._hamming_distance_matrix(query.reshape(1, -1))[0]
+        q = self._prepare_hamming_queries(query)
+        distances = self._hamming_distance_matrix(q)[0]
         top_k = np.argsort(distances)[:k]
         return [SearchResult(self.card_ids[i], float(distances[i])) for i in top_k]
 
