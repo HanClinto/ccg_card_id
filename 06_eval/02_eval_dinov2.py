@@ -100,7 +100,9 @@ def _load_cache(path: Path) -> dict[str, dict]:
 
 
 def get_device() -> torch.device:
-    if torch.backends.mps.is_available():
+    # Allow explicit opt-out for MPS when debugging stability issues.
+    mps_disabled = os.environ.get("PYTORCH_MPS_DISABLED", "0") == "1"
+    if (not mps_disabled) and torch.backends.mps.is_available():
         return torch.device("mps")
     if torch.cuda.is_available():
         return torch.device("cuda")

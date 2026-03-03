@@ -215,11 +215,24 @@ def _collect_runs(results_root: Path) -> list[Path]:
 
 
 def _bytes_per_card_from_variant(variant: str) -> int | None:
+    # Hash variants: method_<size>
     try:
         size = int(variant.split("_")[-1])
         return (size * size) // 8
     except Exception:
-        return None
+        pass
+
+    # DINOv2 variants (float32 vectors)
+    dinov2_dims = {
+        "dinov2_small": 384,
+        "dinov2_base": 768,
+        "dinov2_large": 1024,
+        "dinov2_giant": 1536,
+    }
+    if variant in dinov2_dims:
+        return dinov2_dims[variant] * 4
+
+    return None
 
 
 def _metrics_from_cache(results_root: Path) -> list[dict]:
@@ -331,8 +344,11 @@ def build_report(results_root: Path, reports_root: Path, worst_n: int = 8) -> tu
         except Exception:
             continue
         latest_by_variant[v][k] = r
-        if v not in bytes_by_variant or not bytes_by_variant[v]:
-            bytes_by_variant[v] = str(r.get("bytes_per_card", "-"))
+        if v not in bytes_by_variant or not bytes_by_variant[v] or bytes_by_variant[v] == "":
+            b = r.get("bytes_per_card", "")
+            if b in (None, ""):
+                b = _bytes_per_card_from_variant(v)
+            bytes_by_variant[v] = str(b if b is not None else "-")
 
     def _count(v: str, k: int) -> str:
         row = latest_by_variant.get(v, {}).get(k)
