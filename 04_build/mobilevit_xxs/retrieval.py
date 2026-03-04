@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -63,7 +64,36 @@ def load_finetuned_model(checkpoint: Path, device: torch.device) -> tuple[torch.
     return model, ckpt
 
 
-def embed_paths(model: torch.nn.Module, paths: list[Path], device: torch.device, batch_size: int, image_size: int, desc: str = "embed") -> np.ndarray:
+def _cache_fingerprint(paths: list[Path], image_size: int) -> str:
+    h = hashlib.sha1()
+    h.update(str(image_size).encode("utf-8"))
+    h.update(str(len(paths)).encode("utf-8"))
+    for p in paths:
+        h.update(str(p).encode("utf-8"))
+    return h.hexdigest()
+
+
+def embed_paths(
+    model: torch.nn.Module,
+    paths: list[Path],
+    device: torch.device,
+    batch_size: int,
+    image_size: int,
+    desc: str = "embed",
+    cache_path: Path | None = None,
+    rebuild_cache: bool = False,
+) -> np.ndarray:
+    if cache_path is not None and cache_path.exists() and not rebuild_cache:
+        try:
+            data = np.load(cache_path, allow_pickle=False)
+            emb = data["embeddings"].astype(np.float32)
+            fp = str(data["fingerprint"]) if "fingerprint" in data.files else ""
+            if fp == _cache_fingerprint(paths, image_size):
+                print(f"{desc}: loaded cache {cache_path}")
+                return emb
+        except Exception:
+            pass
+
     tfm = eval_transform(image_size)
     out: list[np.ndarray] = []
     model.eval()
@@ -75,8 +105,16 @@ def embed_paths(model: torch.nn.Module, paths: list[Path], device: torch.device,
             z = model(x).cpu().numpy().astype(np.float32)
             out.append(z)
     if not out:
-        return np.zeros((0, 1), dtype=np.float32)
-    return np.concatenate(out, axis=0)
+        emb = np.zeros((0, 1), dtype=np.float32)
+    else:
+        emb = np.concatenate(out, axis=0)
+
+    if cache_path is not None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(cache_path, embeddings=emb, fingerprint=_cache_fingerprint(paths, image_size))
+        print(f"{desc}: saved cache {cache_path}")
+
+    return emb
 
 
 def evaluate_retrieval(
@@ -90,9 +128,32 @@ def evaluate_retrieval(
     batch_size: int,
     image_size: int,
     label: str = "model",
+    cache_root: Path | None = None,
+    rebuild_cache: bool = False,
 ) -> tuple[dict, list[dict]]:
-    g = embed_paths(model, gallery_paths, device=device, batch_size=batch_size, image_size=image_size, desc=f"{label}: gallery")
-    q = embed_paths(model, query_paths, device=device, batch_size=batch_size, image_size=image_size, desc=f"{label}: query")
+    gallery_cache = cache_root / f"{label}_gallery.npz" if cache_root is not None else None
+    query_cache = cache_root / f"{label}_query.npz" if cache_root is not None else None
+
+    g = embed_paths(
+        model,
+        gallery_paths,
+        device=device,
+        batch_size=batch_size,
+        image_size=image_size,
+        desc=f"{label}: gallery",
+        cache_path=gallery_cache,
+        rebuild_cache=rebuild_cache,
+    )
+    q = embed_paths(
+        model,
+        query_paths,
+        device=device,
+        batch_size=batch_size,
+        image_size=image_size,
+        desc=f"{label}: query",
+        cache_path=query_cache,
+        rebuild_cache=rebuild_cache,
+    )
 
     failures: list[dict] = []
     if len(query_ids) == 0 or g.shape[0] == 0 or q.shape[0] == 0:

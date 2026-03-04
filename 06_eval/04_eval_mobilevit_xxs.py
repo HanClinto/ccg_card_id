@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -42,6 +43,12 @@ def pick_device(force_cpu: bool = False) -> torch.device:
     return torch.device("cpu")
 
 
+def _manifest_key(path: Path) -> str:
+    st = path.stat()
+    raw = f"{path}:{st.st_mtime_ns}:{st.st_size}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Evaluate MobileViT-XXS retrieval (base + fine-tuned)")
     p.add_argument("--manifest", type=Path, required=True)
@@ -53,6 +60,8 @@ def main() -> None:
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     p.add_argument("--run-id", type=str, default=None)
     p.add_argument("--worst-n", type=int, default=20)
+    p.add_argument("--cache-root", type=Path, default=None, help="Optional embedding cache root (default: <output-root>/cache/mobilevit_retrieval/<manifest_key>)")
+    p.add_argument("--rebuild-cache", action="store_true", help="Ignore cached embeddings and recompute")
     p.add_argument("--no-write-results", action="store_true")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
@@ -64,6 +73,11 @@ def main() -> None:
     print(f"Gallery: {len(gallery_paths)} images")
     print(f"Queries: {len(query_paths)} images")
     print(f"Device:  {device}")
+
+    manifest_key = _manifest_key(args.manifest)
+    cache_root = args.cache_root or (args.output_root / "cache" / "mobilevit_retrieval" / manifest_key)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    print(f"Embedding cache: {cache_root}")
 
     summary_rows: list[dict] = []
     failures_all: list[dict] = []
@@ -81,6 +95,8 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             label="base",
+            cache_root=cache_root,
+            rebuild_cache=args.rebuild_cache,
         )
         variant = "mobilevit_xxs_base_320d"
         print(f"[{variant}] top1={metrics['top1']:.4f} top3={metrics['top3']:.4f} top10={metrics['top10']:.4f}")
@@ -117,6 +133,8 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             label=variant,
+            cache_root=cache_root,
+            rebuild_cache=args.rebuild_cache,
         )
         print(f"[{variant}] top1={metrics['top1']:.4f} top3={metrics['top3']:.4f} top10={metrics['top10']:.4f}")
 
