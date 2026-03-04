@@ -105,7 +105,7 @@ def main() -> None:
     manifest_key = _manifest_key(args.manifest)
     cache_root = args.cache_root or (args.output_root / "cache" / "mobilevit_retrieval" / manifest_key)
     cache_root.mkdir(parents=True, exist_ok=True)
-    print(f"Embedding cache: {cache_root}")
+    print(f"Embedding cache dir: {cache_root} (cache files may be created on first run)")
 
     summary_rows: list[dict] = []
     failures_all: list[dict] = []

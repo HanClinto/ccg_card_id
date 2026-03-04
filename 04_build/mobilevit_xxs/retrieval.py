@@ -89,10 +89,18 @@ def embed_paths(
             emb = data["embeddings"].astype(np.float32)
             fp = str(data["fingerprint"]) if "fingerprint" in data.files else ""
             if fp == _cache_fingerprint(paths, image_size):
-                print(f"{desc}: loaded cache {cache_path}")
+                print(f"{desc}: cache hit -> {cache_path}")
                 return torch.from_numpy(emb)
+            else:
+                print(f"{desc}: cache stale (fingerprint mismatch) -> recomputing")
         except Exception:
-            pass
+            print(f"{desc}: cache unreadable -> recomputing")
+
+    if cache_path is not None:
+        if rebuild_cache:
+            print(f"{desc}: rebuild requested -> recomputing embeddings")
+        else:
+            print(f"{desc}: cache miss -> computing embeddings")
 
     tfm = eval_transform(image_size)
     out: list[torch.Tensor] = []
