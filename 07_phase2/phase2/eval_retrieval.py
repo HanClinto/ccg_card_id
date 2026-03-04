@@ -79,41 +79,47 @@ def eval_solring_retrieval(
     gallery_emb = embed_image_paths(model, gallery_paths, device=device, batch_size=batch_size, image_size=image_size)
     query_emb = embed_image_paths(model, query_paths_filtered, device=device, batch_size=batch_size, image_size=image_size)
 
-    sims = query_emb @ gallery_emb.T
-    order = np.argsort(-sims, axis=1)
-
     top_ids: list[list[str]] = []
     rows = []
-    for i, qp in enumerate(query_paths_filtered):
-        idxs = order[i, :10].tolist()
-        preds = [gallery_ids[j] for j in idxs]
-        top_ids.append(preds)
-        rows.append(
-            {
-                "query_image": qp,
-                "true_id": true_ids[i],
-                "top1_id": preds[0] if preds else "",
-                "top3_ids": preds[:3],
-                "top10_ids": preds[:10],
-            }
-        )
+
+    if len(true_ids) > 0 and query_emb.shape[0] > 0 and gallery_emb.shape[0] > 0:
+        sims = query_emb @ gallery_emb.T
+        order = np.argsort(-sims, axis=1)
+
+        for i, qp in enumerate(query_paths_filtered):
+            idxs = order[i, :10].tolist()
+            preds = [gallery_ids[j] for j in idxs]
+            top_ids.append(preds)
+            rows.append(
+                {
+                    "query_image": qp,
+                    "true_id": true_ids[i],
+                    "top1_id": preds[0] if preds else "",
+                    "top3_ids": preds[:3],
+                    "top10_ids": preds[:10],
+                }
+            )
 
     metrics = {
         "top1": recall_at_k(top_ids, true_ids, 1),
         "top3": recall_at_k(top_ids, true_ids, 3),
         "top10": recall_at_k(top_ids, true_ids, 10),
         "n_queries": len(true_ids),
+        "n_gallery": len(gallery_ids),
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if len(true_ids) == 0:
+        metrics["warning"] = f"No Sol Ring queries found in {solring_aligned_dir}"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     with (out_dir / "retrieval_summary.json").open("w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
     with (out_dir / "retrieval_summary.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["top1", "top3", "top10", "n_queries", "evaluated_at"])
+        fields = ["top1", "top3", "top10", "n_queries", "n_gallery", "evaluated_at", "warning"]
+        w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
-        w.writerow(metrics)
+        w.writerow({k: metrics.get(k, "") for k in fields})
 
     with (out_dir / "retrieval_predictions.jsonl").open("w", encoding="utf-8") as f:
         for row in rows:

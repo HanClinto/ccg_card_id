@@ -25,7 +25,7 @@ def main() -> None:
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
 
-    ckpt = torch.load(args.checkpoint, map_location="cpu")
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cargs = ckpt["args"]
     model = EmbeddingNet(cargs["backbone"], embedding_dim=int(cargs["embedding_dim"]), pretrained=False)
     model.load_state_dict(ckpt["model"])

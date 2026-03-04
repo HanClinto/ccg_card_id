@@ -11,6 +11,7 @@ This folder adds a conservative, reproducible Phase-2 training scaffold to impro
   - fallback positive = synthetic augmentation of anchor
   - negative = hard negatives from eval failures JSONL when available, else random different-card negative
 - **Baselines**:
+  - MobileViT-XXS + ArcFace (+ triplet regularizer) (`--backbone mobilevit_xxs`)  ← recommended first run
   - TinyViT + ArcFace (`--backbone tinyvit`)
   - ResNet-50 + ArcFace (`--backbone resnet50`)
 - **Retrieval eval hook** for Sol Ring style set:
@@ -28,6 +29,7 @@ pip install torch torchvision timm
 ```bash
 cd 07_phase2
 python 01_build_manifest.py \
+  --default-cards-json ~/claw/data/ccg_card_id/all_cards.json \
   --out ~/claw/data/ccg_card_id/phase2/manifest.csv \
   --seed 42
 ```
@@ -35,22 +37,45 @@ python 01_build_manifest.py \
 Optional hard-negatives input can come from existing eval failures, e.g.:
 `~/claw/data/ccg_card_id/results/eval/<run_id>/failures.jsonl`
 
-## 2) Train TinyViT + ArcFace (128-dim)
+## 2) Build triplets + hard negatives (Scryfall + pHash)
+
+```bash
+cd 07_phase2
+python 04_build_triplets.py \
+  --out-csv ~/claw/data/ccg_card_id/phase2/triplets.csv \
+  --out-hard-negs-json ~/claw/data/ccg_card_id/phase2/hard_negatives.json
+```
+
+## 3) Train MobileViT-XXS + ArcFace (128-dim)
 
 ```bash
 cd 07_phase2
 python 02_train_arcface.py \
   --manifest ~/claw/data/ccg_card_id/phase2/manifest.csv \
+  --triplets-csv ~/claw/data/ccg_card_id/phase2/triplets.csv \
+  --task-weights card_id=0.6,set_id=0.25,lang_id=0.15 \
   --output-dir ~/claw/data/ccg_card_id/results/phase2 \
-  --backbone tinyvit \
+  --backbone mobilevit_xxs \
   --embedding-dim 128 \
   --epochs 5 \
   --batch-size 16 \
-  --eval-solring \
-  --hard-negatives-jsonl ~/claw/data/ccg_card_id/results/eval/<run_id>/failures.jsonl
+  --image-size 192 \
+  --eval-solring
 ```
 
-## 3) Train TinyViT + ArcFace (256-dim)
+Resume for additional epochs (example: continue from epoch 5 for 3 more epochs):
+
+```bash
+python 02_train_arcface.py \
+  --manifest ~/claw/data/ccg_card_id/phase2/manifest.csv \
+  --output-dir ~/claw/data/ccg_card_id/results/phase2 \
+  --backbone mobilevit_xxs \
+  --embedding-dim 128 \
+  --resume-checkpoint ~/claw/data/ccg_card_id/results/phase2/mobilevit_xxs_arcface_128/last.pt \
+  --epochs 3
+```
+
+## 4) Train TinyViT + ArcFace (256-dim)
 
 ```bash
 cd 07_phase2
@@ -64,7 +89,7 @@ python 02_train_arcface.py \
   --eval-solring
 ```
 
-## 4) Optional ResNet-50 baseline
+## 5) Optional ResNet-50 baseline
 
 ```bash
 cd 07_phase2
@@ -78,7 +103,7 @@ python 02_train_arcface.py \
   --eval-solring
 ```
 
-## 5) Standalone retrieval eval from checkpoint
+## 6) Standalone retrieval eval from checkpoint
 
 ```bash
 cd 07_phase2
@@ -87,6 +112,24 @@ python 03_eval_retrieval.py \
   --manifest ~/claw/data/ccg_card_id/phase2/manifest.csv \
   --out-dir ~/claw/data/ccg_card_id/results/phase2/tinyvit_arcface_128/eval_solring
 ```
+
+## 7) Compare base embeddings vs fine-tuned checkpoints
+
+This runs a direct apples-to-apples retrieval comparison on Sol Ring queries:
+
+- base model embedding space (e.g., `base:mobilevit_xxs`)
+- one or more fine-tuned ArcFace checkpoints (`ft:<run_name>`)
+
+```bash
+cd 07_phase2
+python 05_compare_models.py \
+  --manifest ~/claw/data/ccg_card_id/phase2/manifest.csv \
+  --out-dir ~/claw/data/ccg_card_id/results/phase2/comparisons/mobilevit_xxs \
+  --base-backbone mobilevit_xxs \
+  --checkpoint ~/claw/data/ccg_card_id/results/phase2/mobilevit_xxs_arcface_128/last.pt
+```
+
+Add multiple checkpoints by repeating `--checkpoint`.
 
 ## Outputs
 
