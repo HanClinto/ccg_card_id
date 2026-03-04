@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -20,7 +21,19 @@ def main() -> None:
     p.add_argument("--val-ratio", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--all-languages", action="store_true")
+    p.add_argument("--rebuild-cache", action="store_true", help="Rebuild manifest even if output CSV already exists")
     args = p.parse_args()
+
+    if args.out.exists() and not args.rebuild_cache:
+        with args.out.open("r", newline="", encoding="utf-8") as f:
+            rows = sum(1 for _ in csv.DictReader(f))
+        print(json.dumps({
+            "manifest": str(args.out),
+            "rows": rows,
+            "cached": True,
+            "hint": "Use --rebuild-cache to regenerate manifest",
+        }, indent=2))
+        return
 
     stats = build_manifest_from_scryfall(
         default_cards_json=args.default_cards_json,

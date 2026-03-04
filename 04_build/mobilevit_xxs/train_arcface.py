@@ -182,8 +182,16 @@ def run(args: argparse.Namespace) -> None:
     start_epoch = 1
     history: list[dict] = []
 
-    if args.resume_checkpoint is not None:
-        ckpt = torch.load(args.resume_checkpoint, map_location="cpu", weights_only=False)
+    resume_checkpoint = args.resume_checkpoint
+    auto_ckpt = run_dir / "last.pt"
+    if resume_checkpoint is None and (not args.rebuild_cache) and auto_ckpt.exists():
+        resume_checkpoint = auto_ckpt
+        print(f"auto-resume: found {auto_ckpt}")
+        print("hint: pass --rebuild-cache to ignore prior checkpoint and train from scratch")
+
+    if resume_checkpoint is not None:
+        ckpt = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
+        print(f"loaded checkpoint: {resume_checkpoint}")
         model.load_state_dict(ckpt["model"])
         if "criterion" in ckpt:
             criterion.load_state_dict(ckpt["criterion"])
@@ -204,7 +212,7 @@ def run(args: argparse.Namespace) -> None:
             except Exception:
                 history = []
 
-        print(f"resuming from {args.resume_checkpoint} at epoch={prior_epoch}; running {args.epochs} additional epoch(s)")
+        print(f"resuming from {resume_checkpoint} at epoch={prior_epoch}; running {args.epochs} additional epoch(s)")
 
     end_epoch = start_epoch + args.epochs - 1
     for epoch in range(start_epoch, end_epoch + 1):
@@ -283,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume-checkpoint", type=Path, default=None, help="Resume from a prior last.pt and run --epochs additional epochs")
+    p.add_argument("--rebuild-cache", action="store_true", help="Ignore last.pt auto-resume and start from scratch")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-pretrained", action="store_true")
     p.add_argument("--eval-solring", action="store_true")

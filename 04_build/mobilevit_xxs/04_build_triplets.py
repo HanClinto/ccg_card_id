@@ -27,6 +27,15 @@ def main() -> None:
     p.add_argument("--no-resume", action="store_true")
     args = p.parse_args()
 
+    if args.out_hard_negs_json.exists() and not args.no_resume:
+        try:
+            existing = json.loads(args.out_hard_negs_json.read_text(encoding="utf-8"))
+            loaded = len(existing) if isinstance(existing, dict) else 0
+        except Exception:
+            loaded = 0
+        print(f"resume cache: loaded {loaded} hard-negative anchors from {args.out_hard_negs_json}")
+        print("hint: pass --no-resume to rebuild from scratch")
+
     stats = build_triplets(
         card_id_cards_json=args.card_id_cards_json,
         all_cards_json=args.all_cards_json,

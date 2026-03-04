@@ -91,7 +91,14 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--cpu", action="store_true")
+    p.add_argument("--rebuild-cache", action="store_true", help="Recompute even if comparison.json exists")
     args = p.parse_args()
+
+    cmp_json = args.out_dir / "comparison.json"
+    if cmp_json.exists() and not args.rebuild_cache:
+        print(cmp_json.read_text(encoding="utf-8"))
+        print("(cached) use --rebuild-cache to recompute")
+        return
 
     device = pick_device(force_cpu=args.cpu)
     rows = load_manifest(args.manifest)

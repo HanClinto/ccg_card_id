@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -23,7 +24,14 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--cpu", action="store_true")
+    p.add_argument("--rebuild-cache", action="store_true", help="Recompute even if retrieval_summary.json exists")
     args = p.parse_args()
+
+    summary_path = args.out_dir / "retrieval_summary.json"
+    if summary_path.exists() and not args.rebuild_cache:
+        print(summary_path.read_text(encoding="utf-8"))
+        print("(cached) use --rebuild-cache to recompute")
+        return
 
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cargs = ckpt["args"]
