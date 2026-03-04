@@ -31,6 +31,8 @@ from retrieval import (  # type: ignore
 
 DEFAULT_DATASET = cfg.data_dir / "datasets" / "solring"
 DEFAULT_OUTPUT_ROOT = cfg.data_dir / "results" / "eval"
+DEFAULT_MANIFEST = cfg.data_dir / "mobilevit_xxs" / "manifest.csv"
+DEFAULT_MOBILEVIT_RESULTS = cfg.data_dir / "results" / "mobilevit_xxs"
 
 
 def pick_device(force_cpu: bool = False) -> torch.device:
@@ -49,12 +51,19 @@ def _manifest_key(path: Path) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
+def _discover_latest_checkpoint(results_root: Path) -> Path | None:
+    cands = sorted(results_root.glob("mobilevit_xxs_arcface_*/last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands[0] if cands else None
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Evaluate MobileViT-XXS retrieval (base + fine-tuned)")
-    p.add_argument("--manifest", type=Path, required=True)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     p.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     p.add_argument("--checkpoint", type=Path, action="append", default=[])
+    p.add_argument("--results-root", type=Path, default=DEFAULT_MOBILEVIT_RESULTS, help="Root where MobileViT training runs are stored (used for auto-discovery)")
     p.add_argument("--skip-base", action="store_true")
+    p.add_argument("--skip-finetuned", action="store_true")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--image-size", type=int, default=224)
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -66,10 +75,25 @@ def main() -> None:
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
 
+    if not args.manifest.exists():
+        raise FileNotFoundError(f"Manifest not found: {args.manifest}. Build it with 04_build/mobilevit_xxs/01_build_manifest.py")
+
+    if args.skip_finetuned:
+        args.checkpoint = []
+    elif not args.checkpoint:
+        auto_ckpt = _discover_latest_checkpoint(args.results_root)
+        if auto_ckpt is not None:
+            args.checkpoint = [auto_ckpt]
+            print(f"Auto-discovered checkpoint: {auto_ckpt}")
+        else:
+            print(f"No checkpoint found under {args.results_root}; running base-only (or pass --checkpoint).")
+
     gallery_paths, gallery_ids = load_manifest_gallery(args.manifest)
     query_paths, query_ids = load_solring_queries(args.dataset)
     device = pick_device(force_cpu=args.cpu)
 
+    print(f"Manifest: {args.manifest}")
+    print(f"Dataset:  {args.dataset}")
     print(f"Gallery: {len(gallery_paths)} images")
     print(f"Queries: {len(query_paths)} images")
     print(f"Device:  {device}")
