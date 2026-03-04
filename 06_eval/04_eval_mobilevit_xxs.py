@@ -71,6 +71,9 @@ def main() -> None:
     p.add_argument("--worst-n", type=int, default=20)
     p.add_argument("--cache-root", type=Path, default=None, help="Optional embedding cache root (default: <output-root>/cache/mobilevit_retrieval/<manifest_key>)")
     p.add_argument("--rebuild-cache", action="store_true", help="Ignore cached embeddings and recompute")
+    p.add_argument("--fp16", dest="fp16", action="store_true", help="Use float16 for similarity search on MPS/CUDA (faster, lower memory)")
+    p.add_argument("--no-fp16", dest="fp16", action="store_false", help="Disable float16 similarity search")
+    p.set_defaults(fp16=True)
     p.add_argument("--no-write-results", action="store_true")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
@@ -97,6 +100,7 @@ def main() -> None:
     print(f"Gallery: {len(gallery_paths)} images")
     print(f"Queries: {len(query_paths)} images")
     print(f"Device:  {device}")
+    print(f"FP16 search: {args.fp16 and device.type in {'mps', 'cuda'}}")
 
     manifest_key = _manifest_key(args.manifest)
     cache_root = args.cache_root or (args.output_root / "cache" / "mobilevit_retrieval" / manifest_key)
@@ -121,6 +125,7 @@ def main() -> None:
             label="base",
             cache_root=cache_root,
             rebuild_cache=args.rebuild_cache,
+            use_fp16=args.fp16,
         )
         variant = "mobilevit_xxs_base_320d"
         print(f"[{variant}] top1={metrics['top1']:.4f} top3={metrics['top3']:.4f} top10={metrics['top10']:.4f}")
@@ -159,6 +164,7 @@ def main() -> None:
             label=variant,
             cache_root=cache_root,
             rebuild_cache=args.rebuild_cache,
+            use_fp16=args.fp16,
         )
         print(f"[{variant}] top1={metrics['top1']:.4f} top3={metrics['top3']:.4f} top10={metrics['top10']:.4f}")
 

@@ -82,7 +82,7 @@ def embed_paths(
     desc: str = "embed",
     cache_path: Path | None = None,
     rebuild_cache: bool = False,
-) -> np.ndarray:
+) -> torch.Tensor:
     if cache_path is not None and cache_path.exists() and not rebuild_cache:
         try:
             data = np.load(cache_path, allow_pickle=False)
@@ -90,31 +90,31 @@ def embed_paths(
             fp = str(data["fingerprint"]) if "fingerprint" in data.files else ""
             if fp == _cache_fingerprint(paths, image_size):
                 print(f"{desc}: loaded cache {cache_path}")
-                return emb
+                return torch.from_numpy(emb)
         except Exception:
             pass
 
     tfm = eval_transform(image_size)
-    out: list[np.ndarray] = []
+    out: list[torch.Tensor] = []
     model.eval()
     with torch.no_grad():
         for i in tqdm(range(0, len(paths), batch_size), desc=desc, unit="batch"):
             batch = paths[i : i + batch_size]
             ims = [tfm(Image.open(p).convert("RGB")) for p in batch]
             x = torch.stack(ims).to(device)
-            z = model(x).cpu().numpy().astype(np.float32)
+            z = model(x).detach().to("cpu", dtype=torch.float32)
             out.append(z)
     if not out:
-        emb = np.zeros((0, 1), dtype=np.float32)
+        emb_t = torch.zeros((0, 1), dtype=torch.float32)
     else:
-        emb = np.concatenate(out, axis=0)
+        emb_t = torch.cat(out, dim=0)
 
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(cache_path, embeddings=emb, fingerprint=_cache_fingerprint(paths, image_size))
+        np.savez_compressed(cache_path, embeddings=emb_t.numpy(), fingerprint=_cache_fingerprint(paths, image_size))
         print(f"{desc}: saved cache {cache_path}")
 
-    return emb
+    return emb_t
 
 
 def evaluate_retrieval(
@@ -130,6 +130,7 @@ def evaluate_retrieval(
     label: str = "model",
     cache_root: Path | None = None,
     rebuild_cache: bool = False,
+    use_fp16: bool = True,
 ) -> tuple[dict, list[dict]]:
     gallery_cache = cache_root / f"{label}_gallery.npz" if cache_root is not None else None
     query_cache = cache_root / f"{label}_query.npz" if cache_root is not None else None
@@ -159,14 +160,22 @@ def evaluate_retrieval(
     if len(query_ids) == 0 or g.shape[0] == 0 or q.shape[0] == 0:
         return {"top1": 0.0, "top3": 0.0, "top10": 0.0, "n_queries": len(query_ids), "n_gallery": len(gallery_ids)}, failures
 
-    sims = q @ g.T
-    order = np.argsort(-sims, axis=1)
+    dtype = torch.float16 if (use_fp16 and device.type in {"mps", "cuda"}) else torch.float32
+    g_dev = g.to(device=device, dtype=dtype)
+    q_dev = q.to(device=device, dtype=dtype)
+
+    sims = q_dev @ g_dev.T
+    k = min(10, g_dev.shape[0])
+    top_scores_t, top_idxs_t = torch.topk(sims, k=k, dim=1)
+
+    top_scores_np = top_scores_t.to("cpu", dtype=torch.float32).numpy()
+    top_idxs_np = top_idxs_t.to("cpu").numpy()
 
     hit1 = hit3 = hit10 = 0
     for i, true_id in enumerate(query_ids):
-        idxs = order[i, :10].tolist()
+        idxs = top_idxs_np[i].tolist()
         top_ids = [gallery_ids[j] for j in idxs]
-        top_scores = [float(sims[i, j]) for j in idxs]
+        top_scores = [float(x) for x in top_scores_np[i].tolist()]
 
         if true_id in top_ids[:1]:
             hit1 += 1
