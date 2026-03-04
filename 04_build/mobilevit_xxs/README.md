@@ -15,6 +15,9 @@ This is the canonical MobileViT-XXS workflow in the main project structure.
 For consolidated cross-algorithm reporting (pHash vs DINO vs MobileViT), run:
 - `06_eval/04_eval_mobilevit_xxs.py`
 
+For explicit vector precompute/build stage, run:
+- `05_build/01_precompute_mobilevit_vectors.py`
+
 ---
 
 ## Data/output defaults

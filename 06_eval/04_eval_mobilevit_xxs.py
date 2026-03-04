@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 
@@ -45,12 +44,6 @@ def pick_device(force_cpu: bool = False) -> torch.device:
     return torch.device("cpu")
 
 
-def _manifest_key(path: Path) -> str:
-    st = path.stat()
-    raw = f"{path}:{st.st_mtime_ns}:{st.st_size}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
-
-
 def _discover_latest_checkpoint(results_root: Path) -> Path | None:
     cands = sorted(results_root.glob("mobilevit_xxs_arcface_*/last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0] if cands else None
@@ -69,7 +62,7 @@ def main() -> None:
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     p.add_argument("--run-id", type=str, default=None)
     p.add_argument("--worst-n", type=int, default=20)
-    p.add_argument("--cache-root", type=Path, default=None, help="Optional embedding cache root (default: <output-root>/cache/mobilevit_retrieval/<manifest_key>)")
+    p.add_argument("--cache-root", type=Path, default=None, help="Optional embedding cache root (default: <CCG_DATA_DIR>/vectors/mobilevit_xxs/img<image_size>/manifest_<name>/dataset_<name>)")
     p.add_argument("--rebuild-cache", action="store_true", help="Ignore cached embeddings and recompute")
     p.add_argument("--fp16", dest="fp16", action="store_true", help="Use float16 for similarity search on MPS/CUDA (faster, lower memory)")
     p.add_argument("--no-fp16", dest="fp16", action="store_false", help="Disable float16 similarity search")
@@ -102,8 +95,8 @@ def main() -> None:
     print(f"Device:  {device}")
     print(f"FP16 search: {args.fp16 and device.type in {'mps', 'cuda'}}")
 
-    manifest_key = _manifest_key(args.manifest)
-    cache_root = args.cache_root or (args.output_root / "cache" / "mobilevit_retrieval" / manifest_key)
+    default_cache_root = cfg.data_dir / "vectors" / "mobilevit_xxs" / f"img{args.image_size}" / f"manifest_{args.manifest.stem}" / f"dataset_{args.dataset.name}"
+    cache_root = args.cache_root or default_cache_root
     cache_root.mkdir(parents=True, exist_ok=True)
     print(f"Embedding cache dir: {cache_root} (cache files may be created on first run)")
 
