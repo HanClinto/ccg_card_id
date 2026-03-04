@@ -52,8 +52,8 @@ python 02_eval_dinov2.py --output-root ./results --run-id dinov2_small_top10
 
 # MobileViT-XXS eval (base + fine-tuned checkpoint)
 python 04_eval_mobilevit_xxs.py \
-  --manifest ~/claw/data/ccg_card_id/phase2/manifest.csv \
-  --checkpoint ~/claw/data/ccg_card_id/results/phase2/mobilevit_xxs_arcface_128/last.pt
+  --manifest ~/claw/data/ccg_card_id/mobilevit_xxs/manifest.csv \
+  --checkpoint ~/claw/data/ccg_card_id/results/mobilevit_xxs/mobilevit_xxs_arcface_128/last.pt
 
 # Disable artifact writing (terminal summary only)
 python 02_eval_dinov2.py --no-write-results

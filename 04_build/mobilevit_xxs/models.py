@@ -18,6 +18,15 @@ def build_backbone(name: str, pretrained: bool = True) -> tuple[nn.Module, int]:
         feat_dim = model.num_features
         return model, int(feat_dim)
 
+    if name == "mobilevit_xxs":
+        try:
+            import timm
+        except Exception as e:
+            raise RuntimeError("mobilevit_xxs backbone requires timm. Install with: pip install timm") from e
+        model = timm.create_model("mobilevit_xxs", pretrained=pretrained, num_classes=0, global_pool="avg")
+        feat_dim = model.num_features
+        return model, int(feat_dim)
+
     if name == "resnet50":
         from torchvision.models import ResNet50_Weights, resnet50
 

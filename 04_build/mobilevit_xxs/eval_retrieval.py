@@ -11,7 +11,7 @@ from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
-from .data import ManifestRow, extract_card_id_from_filename
+from data import ManifestRow, extract_card_id_from_filename
 
 
 def default_eval_transform(image_size: int = 224):

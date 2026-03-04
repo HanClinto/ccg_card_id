@@ -36,11 +36,12 @@ In this way, we can run the full pipeline of scripts on a nightly basis, and onl
 06_eval/            # Evaluation and benchmarking
   └── 01_eval_retrieval.py  # Retrieval performance evaluation
 
-07_phase2/          # Metric-learning training scaffold (ArcFace baselines)
-  ├── 01_build_manifest.py
-  ├── 02_train_arcface.py
-  ├── 03_eval_retrieval.py
-  └── README.md
+04_build/
+  └── mobilevit_xxs/   # MobileViT-XXS metric-learning training + eval utilities
+      ├── 01_build_manifest.py
+      ├── 02_train_arcface.py
+      ├── 03_eval_retrieval.py
+      └── README.md
 ```
 
 ## Configuration

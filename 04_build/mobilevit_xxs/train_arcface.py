@@ -12,10 +12,10 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from tqdm import tqdm
 
-from .data import ManifestRow, load_manifest, read_hard_negatives
-from .eval_retrieval import eval_solring_retrieval
-from .mining import TripletMiner
-from .models import ArcFaceLoss, EmbeddingNet
+from data import ManifestRow, load_manifest, read_hard_negatives
+from eval_retrieval import eval_solring_retrieval
+from mining import TripletMiner
+from models import ArcFaceLoss, EmbeddingNet
 
 
 class TripletClassificationDataset(Dataset):

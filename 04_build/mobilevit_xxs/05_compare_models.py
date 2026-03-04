@@ -8,12 +8,12 @@ from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from phase2.data import load_manifest
-from phase2.eval_retrieval import eval_solring_retrieval
-from phase2.models import EmbeddingNet, build_backbone
-from phase2.train_arcface import pick_device
+from data import load_manifest
+from eval_retrieval import eval_solring_retrieval
+from models import EmbeddingNet, build_backbone
+from train_arcface import pick_device
 
 
 class BackboneFeatureModel(torch.nn.Module):

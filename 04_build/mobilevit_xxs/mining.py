@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from .data import ManifestRow, random_choice
+from data import ManifestRow, random_choice
 
 
 @dataclass

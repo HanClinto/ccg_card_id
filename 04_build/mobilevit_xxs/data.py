@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from tqdm import tqdm
+
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
@@ -32,12 +34,20 @@ def deterministic_split(card_id: str, train: float, val: float, seed: int) -> st
     return "test"
 
 
-def _find_image_for_card(images_root: Path, card_id: str) -> Path | None:
-    candidates = list(images_root.rglob(f"{card_id}.*"))
+def _build_image_index(images_root: Path) -> dict[str, list[Path]]:
+    idx: dict[str, list[Path]] = {}
+    exts = {".png", ".jpg", ".jpeg", ".webp"}
+    for p in tqdm(images_root.rglob("*"), desc=f"index images {images_root.name}", unit="file"):
+        if not p.is_file() or p.suffix.lower() not in exts:
+            continue
+        idx.setdefault(p.stem, []).append(p)
+    return idx
+
+
+def _find_image_for_card(image_index: dict[str, list[Path]], card_id: str) -> Path | None:
+    candidates = image_index.get(card_id)
     if not candidates:
         return None
-    # Prefer front face if available
-    candidates = sorted(candidates)
     for c in candidates:
         if "/front/" in c.as_posix():
             return c
@@ -55,12 +65,13 @@ def build_manifest_from_scryfall(
     english_only: bool = True,
 ) -> dict[str, int]:
     data = json.loads(default_cards_json.read_text(encoding="utf-8"))
+    image_index = _build_image_index(images_root)
 
     rows: list[ManifestRow] = []
     missing_image = 0
     skipped_lang = 0
 
-    for card in data:
+    for card in tqdm(data, desc=f"build manifest {default_cards_json.name}", unit="card"):
         if card.get("image_status") in {"missing", "placeholder"}:
             continue
         if english_only and card.get("lang") != "en":
@@ -71,7 +82,7 @@ def build_manifest_from_scryfall(
         if not card_id:
             continue
 
-        img = _find_image_for_card(images_root, card_id)
+        img = _find_image_for_card(image_index, card_id)
         if img is None:
             missing_image += 1
             continue

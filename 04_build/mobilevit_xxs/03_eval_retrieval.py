@@ -6,16 +6,16 @@ from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from phase2.data import load_manifest
-from phase2.eval_retrieval import eval_solring_retrieval
-from phase2.models import EmbeddingNet
-from phase2.train_arcface import pick_device
+from data import load_manifest
+from eval_retrieval import eval_solring_retrieval
+from models import EmbeddingNet
+from train_arcface import pick_device
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Evaluate phase2 embedding model on solring retrieval")
+    p = argparse.ArgumentParser(description="Evaluate MobileViT-XXS fine-tuned embedding model on Sol Ring retrieval")
     p.add_argument("--checkpoint", type=Path, required=True)
     p.add_argument("--manifest", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, required=True)
