@@ -39,8 +39,9 @@ In this way, we can run the full pipeline of scripts on a nightly basis, and onl
 04_build/
   └── mobilevit_xxs/   # MobileViT-XXS metric-learning training + eval utilities
       ├── 01_build_manifest.py
-      ├── 02_train_arcface.py
-      ├── 03_eval_retrieval.py
+      ├── 02_build_triplets.py
+      ├── 03_train_arcface.py
+      ├── 04_eval_retrieval.py
       └── README.md
 ```
 

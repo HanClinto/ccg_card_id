@@ -96,7 +96,7 @@ Direct unattended scraping of TCGplayer listing pages/images is **high risk** fr
 ## Week 1 (bootstrap now)
 1. **Build local real manifest from current datasets**
    - Use helper script added in this task:
-     - `04_build/mobilevit_xxs/03_build_local_real_manifest.py`
+     - `04_build/mobilevit_xxs/x_build_local_real_manifest.py`
    - Includes:
      - positives: `clint_cards_with_backgrounds/good`, `clint_cards_solring/good`, `daniel_scans/images_processed`
      - negatives: `clint_cards_with_backgrounds/bad`
@@ -135,7 +135,7 @@ Direct unattended scraping of TCGplayer listing pages/images is **high risk** fr
 
 ## 5) Added helper script
 
-## `04_build/mobilevit_xxs/03_build_local_real_manifest.py`
+## `04_build/mobilevit_xxs/x_build_local_real_manifest.py`
 Builds a CSV manifest from currently available local real-camera datasets.
 
 ### Output schema
@@ -149,7 +149,7 @@ Builds a CSV manifest from currently available local real-camera datasets.
 
 ### Example usage
 ```bash
-python3 04_build/mobilevit_xxs/03_build_local_real_manifest.py \
+python3 04_build/mobilevit_xxs/x_build_local_real_manifest.py \
   --datasets-root /Users/hanclaw/claw/data/ccg_card_id/datasets \
   --out /Users/hanclaw/claw/projects/ccg_card_id/cache/phase2/local_real_manifest.csv
 ```
