@@ -6,8 +6,9 @@ Evaluation scripts for Sol Ring retrieval tests.
 
 - `01_eval_retrieval.py`: perceptual-hash retrieval evaluation (`phash`, `whash_db4`, etc.)
 - `02_eval_dinov2.py`: DINOv2 embedding retrieval evaluation
+- `04_eval_mobilevit_xxs.py`: MobileViT-XXS retrieval evaluation (base + fine-tuned checkpoints)
 
-Both scripts still print terminal summaries and now also persist run artifacts by default.
+All scripts print terminal summaries and persist run artifacts by default.
 
 ## Output artifacts
 
@@ -48,6 +49,11 @@ python 01_eval_retrieval.py --output-root ./results --run-id phash_sanity
 # DINOv2 eval
 python 02_eval_dinov2.py --models small --top-k 1 3 10
 python 02_eval_dinov2.py --output-root ./results --run-id dinov2_small_top10
+
+# MobileViT-XXS eval (base + fine-tuned checkpoint)
+python 04_eval_mobilevit_xxs.py \
+  --manifest ~/claw/data/ccg_card_id/phase2/manifest.csv \
+  --checkpoint ~/claw/data/ccg_card_id/results/phase2/mobilevit_xxs_arcface_128/last.pt
 
 # Disable artifact writing (terminal summary only)
 python 02_eval_dinov2.py --no-write-results
