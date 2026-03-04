@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torchvision import transforms
+from tqdm import tqdm
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
@@ -62,12 +63,12 @@ def load_finetuned_model(checkpoint: Path, device: torch.device) -> tuple[torch.
     return model, ckpt
 
 
-def embed_paths(model: torch.nn.Module, paths: list[Path], device: torch.device, batch_size: int, image_size: int) -> np.ndarray:
+def embed_paths(model: torch.nn.Module, paths: list[Path], device: torch.device, batch_size: int, image_size: int, desc: str = "embed") -> np.ndarray:
     tfm = eval_transform(image_size)
     out: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
-        for i in range(0, len(paths), batch_size):
+        for i in tqdm(range(0, len(paths), batch_size), desc=desc, unit="batch"):
             batch = paths[i : i + batch_size]
             ims = [tfm(Image.open(p).convert("RGB")) for p in batch]
             x = torch.stack(ims).to(device)
@@ -88,9 +89,10 @@ def evaluate_retrieval(
     device: torch.device,
     batch_size: int,
     image_size: int,
+    label: str = "model",
 ) -> tuple[dict, list[dict]]:
-    g = embed_paths(model, gallery_paths, device=device, batch_size=batch_size, image_size=image_size)
-    q = embed_paths(model, query_paths, device=device, batch_size=batch_size, image_size=image_size)
+    g = embed_paths(model, gallery_paths, device=device, batch_size=batch_size, image_size=image_size, desc=f"{label}: gallery")
+    q = embed_paths(model, query_paths, device=device, batch_size=batch_size, image_size=image_size, desc=f"{label}: query")
 
     failures: list[dict] = []
     if len(query_ids) == 0 or g.shape[0] == 0 or q.shape[0] == 0:

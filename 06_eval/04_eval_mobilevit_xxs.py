@@ -69,6 +69,7 @@ def main() -> None:
     failures_all: list[dict] = []
 
     if not args.skip_base:
+        print("Running base MobileViT-XXS retrieval...")
         base = BackboneFeatureModel("mobilevit_xxs").to(device).eval()
         metrics, failures = evaluate_retrieval(
             model=base,
@@ -79,6 +80,7 @@ def main() -> None:
             device=device,
             batch_size=args.batch_size,
             image_size=args.image_size,
+            label="base",
         )
         variant = "mobilevit_xxs_base_320d"
         print(f"[{variant}] top1={metrics['top1']:.4f} top3={metrics['top3']:.4f} top10={metrics['top10']:.4f}")
@@ -99,6 +101,7 @@ def main() -> None:
             failures_all.append({"algorithm_variant": variant, "topk": 1, **f, "image_path": rel})
 
     for ckpt in args.checkpoint:
+        print(f"Running fine-tuned retrieval for checkpoint: {ckpt}")
         model, ckpt_meta = load_finetuned_model(ckpt, device)
         emb_dim = int(ckpt_meta.get("args", {}).get("embedding_dim", 128))
         epoch = int(ckpt_meta.get("epoch", 0))
@@ -113,6 +116,7 @@ def main() -> None:
             device=device,
             batch_size=args.batch_size,
             image_size=args.image_size,
+            label=variant,
         )
         print(f"[{variant}] top1={metrics['top1']:.4f} top3={metrics['top3']:.4f} top10={metrics['top10']:.4f}")
 
