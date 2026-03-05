@@ -62,7 +62,8 @@ def main() -> None:
     p.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     p.add_argument("--run-id", type=str, default=None)
     p.add_argument("--worst-n", type=int, default=20)
-    p.add_argument("--cache-root", type=Path, default=None, help="Optional embedding cache root (default: <CCG_DATA_DIR>/vectors/mobilevit_xxs/img<image_size>/manifest_<name>/dataset_<name>)")
+    p.add_argument("--gallery-cache-root", type=Path, default=None, help="Optional gallery embedding cache root (default: <CCG_DATA_DIR>/vectors/mobilevit_xxs/img<image_size>/gallery_manifest_<name>)")
+    p.add_argument("--query-cache-root", type=Path, default=None, help="Optional query embedding cache root (default: <dataset>/cache/mobilevit_xxs/img<image_size>)")
     p.add_argument("--rebuild-cache", action="store_true", help="Ignore cached embeddings and recompute")
     p.add_argument("--fp16", dest="fp16", action="store_true", help="Use float16 for similarity search on MPS/CUDA (faster, lower memory)")
     p.add_argument("--no-fp16", dest="fp16", action="store_false", help="Disable float16 similarity search")
@@ -95,10 +96,12 @@ def main() -> None:
     print(f"Device:  {device}")
     print(f"FP16 search: {args.fp16 and device.type in {'mps', 'cuda'}}")
 
-    default_cache_root = cfg.data_dir / "vectors" / "mobilevit_xxs" / f"img{args.image_size}" / f"manifest_{args.manifest.stem}" / f"dataset_{args.dataset.name}"
-    cache_root = args.cache_root or default_cache_root
-    cache_root.mkdir(parents=True, exist_ok=True)
-    print(f"Embedding cache dir: {cache_root} (cache files may be created on first run)")
+    gallery_cache_root = args.gallery_cache_root or (cfg.data_dir / "vectors" / "mobilevit_xxs" / f"img{args.image_size}" / f"gallery_manifest_{args.manifest.stem}")
+    query_cache_root = args.query_cache_root or (args.dataset / "cache" / "mobilevit_xxs" / f"img{args.image_size}")
+    gallery_cache_root.mkdir(parents=True, exist_ok=True)
+    query_cache_root.mkdir(parents=True, exist_ok=True)
+    print(f"Gallery cache dir: {gallery_cache_root}")
+    print(f"Query cache dir:   {query_cache_root}")
 
     summary_rows: list[dict] = []
     failures_all: list[dict] = []
@@ -116,7 +119,8 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             label="base",
-            cache_root=cache_root,
+            gallery_cache_root=gallery_cache_root,
+            query_cache_root=query_cache_root,
             rebuild_cache=args.rebuild_cache,
             use_fp16=args.fp16,
         )
@@ -155,7 +159,8 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             label=variant,
-            cache_root=cache_root,
+            gallery_cache_root=gallery_cache_root,
+            query_cache_root=query_cache_root,
             rebuild_cache=args.rebuild_cache,
             use_fp16=args.fp16,
         )

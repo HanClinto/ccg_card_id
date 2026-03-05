@@ -63,15 +63,16 @@ def main() -> None:
     query_paths, _ = load_solring_queries(args.dataset)
     device = pick_device(force_cpu=args.cpu)
 
-    gallery_tag = f"gallery_manifest_{args.manifest.stem}"
-    query_tag = f"queries_{args.dataset.name}"
-    cache_root = args.vectors_root / f"img{args.image_size}" / gallery_tag / query_tag
-    cache_root.mkdir(parents=True, exist_ok=True)
+    gallery_root = args.vectors_root / f"img{args.image_size}" / f"gallery_manifest_{args.manifest.stem}"
+    query_root = args.dataset / "cache" / "mobilevit_xxs" / f"img{args.image_size}"
+    gallery_root.mkdir(parents=True, exist_ok=True)
+    query_root.mkdir(parents=True, exist_ok=True)
 
     print(f"Device: {device}")
     print(f"Gallery (from manifest): {len(gallery_paths)}")
     print(f"Queries (from dataset={args.dataset.name}): {len(query_paths)}")
-    print(f"Vectors root: {cache_root}")
+    print(f"Gallery vectors root: {gallery_root}")
+    print(f"Query vectors root:   {query_root}")
 
     if not args.skip_base:
         base = BackboneFeatureModel("mobilevit_xxs").to(device).eval()
@@ -82,7 +83,7 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             desc="base: gallery",
-            cache_path=cache_root / "mobilevit_xxs_base_320d_gallery.npz",
+            cache_path=gallery_root / "mobilevit_xxs_base_320d_gallery.npz",
             rebuild_cache=args.rebuild_cache,
         )
         embed_paths(
@@ -92,7 +93,7 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             desc="base: query",
-            cache_path=cache_root / "mobilevit_xxs_base_320d_query_solring.npz",
+            cache_path=query_root / "mobilevit_xxs_base_320d_query_solring.npz",
             rebuild_cache=args.rebuild_cache,
         )
 
@@ -108,7 +109,7 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             desc=f"{tag}: gallery",
-            cache_path=cache_root / f"{tag}_gallery.npz",
+            cache_path=gallery_root / f"{tag}_gallery.npz",
             rebuild_cache=args.rebuild_cache,
         )
         embed_paths(
@@ -118,7 +119,7 @@ def main() -> None:
             batch_size=args.batch_size,
             image_size=args.image_size,
             desc=f"{tag}: query",
-            cache_path=cache_root / f"{tag}_query_solring.npz",
+            cache_path=query_root / f"{tag}_query_solring.npz",
             rebuild_cache=args.rebuild_cache,
         )
 

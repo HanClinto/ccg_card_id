@@ -8,9 +8,12 @@ Build reusable retrieval corpora from vectorizers/models.
 python 05_build/01_precompute_mobilevit_vectors.py
 ```
 
-Defaults come from `.env` (`CCG_DATA_DIR` / `CCG_DATA_ROOT`) and store vectors under:
+Defaults come from `.env` (`CCG_DATA_DIR` / `CCG_DATA_ROOT`) and store:
 
-`<CCG_DATA_DIR>/vectors/mobilevit_xxs/img<image_size>/manifest_<manifest_name>/dataset_<dataset_name>/`
+- Gallery vectors under:
+  - `<CCG_DATA_DIR>/vectors/mobilevit_xxs/img<image_size>/gallery_manifest_<manifest_name>/`
+- Query vectors under:
+  - `<CCG_DATA_DIR>/datasets/solring/cache/mobilevit_xxs/img<image_size>/`
 
 Example files:
 

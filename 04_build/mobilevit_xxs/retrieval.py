@@ -136,12 +136,13 @@ def evaluate_retrieval(
     batch_size: int,
     image_size: int,
     label: str = "model",
-    cache_root: Path | None = None,
+    gallery_cache_root: Path | None = None,
+    query_cache_root: Path | None = None,
     rebuild_cache: bool = False,
     use_fp16: bool = True,
 ) -> tuple[dict, list[dict]]:
-    gallery_cache = cache_root / f"{label}_gallery.npz" if cache_root is not None else None
-    query_cache = cache_root / f"{label}_query.npz" if cache_root is not None else None
+    gallery_cache = gallery_cache_root / f"{label}_gallery.npz" if gallery_cache_root is not None else None
+    query_cache = query_cache_root / f"{label}_query.npz" if query_cache_root is not None else None
 
     g = embed_paths(
         model,
