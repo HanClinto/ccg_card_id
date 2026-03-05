@@ -11,10 +11,9 @@ To use a different location (e.g. an external drive):
 Usage:
     from ccg_card_id.config import cfg
 
-    print(cfg.data_dir)              # ~/claw/data/ccg_card_id
-    print(cfg.scryfall_dir)          # ~/claw/data/ccg_card_id (flat layout)
-    print(cfg.vectors_dir)           # ~/claw/data/ccg_card_id
-    print(cfg.phash_vectors_file(64))  # ...default_cards_phash_64.json
+    print(cfg.data_dir)                  # ~/claw/data/ccg_card_id
+    print(cfg.scryfall_images_dir)       # .../catalog/scryfall/images/png
+    print(cfg.vectors_file("phash",64)) # .../default_cards_phash_64.json
 """
 
 from pathlib import Path
@@ -42,8 +41,8 @@ class Config:
         self.scryfall_default_cards: Path = self.data_dir / "default_cards.json"
         self.scryfall_all_cards: Path = self.data_dir / "all_cards.json"
 
-        # Scryfall image cache
-        self.scryfall_images_dir: Path = self.data_dir / "images" / "png"
+        # Scryfall catalog reference images
+        self.scryfall_images_dir: Path = self.data_dir / "catalog" / "scryfall" / "images" / "png"
 
     # ------------------------------------------------------------------
     # Vector file paths — named by method and hash_size grid dimension

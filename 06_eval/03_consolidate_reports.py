@@ -76,7 +76,7 @@ def _front_image_for_id(card_id: str) -> Path | None:
     if not m:
         return None
     cid = m.group(0).lower()
-    p = cfg.data_dir / "images" / "png" / "front" / cid[0] / cid[1] / f"{cid}.png"
+    p = cfg.scryfall_images_dir / "front" / cid[0] / cid[1] / f"{cid}.png"
     return p if p.exists() else None
 
 
