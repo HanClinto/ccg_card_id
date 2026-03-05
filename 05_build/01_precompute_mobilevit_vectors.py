@@ -63,12 +63,14 @@ def main() -> None:
     query_paths, _ = load_solring_queries(args.dataset)
     device = pick_device(force_cpu=args.cpu)
 
-    cache_root = args.vectors_root / f"img{args.image_size}" / f"manifest_{args.manifest.stem}" / f"dataset_{args.dataset.name}"
+    gallery_tag = f"gallery_manifest_{args.manifest.stem}"
+    query_tag = f"queries_{args.dataset.name}"
+    cache_root = args.vectors_root / f"img{args.image_size}" / gallery_tag / query_tag
     cache_root.mkdir(parents=True, exist_ok=True)
 
     print(f"Device: {device}")
-    print(f"Gallery: {len(gallery_paths)}")
-    print(f"Queries: {len(query_paths)}")
+    print(f"Gallery (from manifest): {len(gallery_paths)}")
+    print(f"Queries (from dataset={args.dataset.name}): {len(query_paths)}")
     print(f"Vectors root: {cache_root}")
 
     if not args.skip_base:
