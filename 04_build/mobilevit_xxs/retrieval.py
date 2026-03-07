@@ -125,62 +125,16 @@ def embed_paths(
     return emb_t
 
 
-def evaluate_retrieval(
-    *,
-    model: torch.nn.Module,
-    gallery_paths: list[Path],
+def _compute_hits(
+    top_idxs_np,
+    top_scores_np,
     gallery_ids: list[str],
-    query_paths: list[Path],
     query_ids: list[str],
-    device: torch.device,
-    batch_size: int,
-    image_size: int,
-    label: str = "model",
-    gallery_cache_root: Path | None = None,
-    query_cache_root: Path | None = None,
-    rebuild_cache: bool = False,
-    use_fp16: bool = True,
+    query_paths: list[Path],
 ) -> tuple[dict, list[dict]]:
-    gallery_cache = gallery_cache_root / f"{label}_gallery.npz" if gallery_cache_root is not None else None
-    query_cache = query_cache_root / f"{label}_query_solring.npz" if query_cache_root is not None else None
-
-    g = embed_paths(
-        model,
-        gallery_paths,
-        device=device,
-        batch_size=batch_size,
-        image_size=image_size,
-        desc=f"{label}: gallery",
-        cache_path=gallery_cache,
-        rebuild_cache=rebuild_cache,
-    )
-    q = embed_paths(
-        model,
-        query_paths,
-        device=device,
-        batch_size=batch_size,
-        image_size=image_size,
-        desc=f"{label}: query",
-        cache_path=query_cache,
-        rebuild_cache=rebuild_cache,
-    )
-
-    failures: list[dict] = []
-    if len(query_ids) == 0 or g.shape[0] == 0 or q.shape[0] == 0:
-        return {"top1": 0.0, "top3": 0.0, "top10": 0.0, "n_queries": len(query_ids), "n_gallery": len(gallery_ids)}, failures
-
-    dtype = torch.float16 if (use_fp16 and device.type in {"mps", "cuda"}) else torch.float32
-    g_dev = g.to(device=device, dtype=dtype)
-    q_dev = q.to(device=device, dtype=dtype)
-
-    sims = q_dev @ g_dev.T
-    k = min(10, g_dev.shape[0])
-    top_scores_t, top_idxs_t = torch.topk(sims, k=k, dim=1)
-
-    top_scores_np = top_scores_t.to("cpu", dtype=torch.float32).numpy()
-    top_idxs_np = top_idxs_t.to("cpu").numpy()
-
+    """Compute top-1/3/10 hit rates and failures for one set of IDs."""
     hit1 = hit3 = hit10 = 0
+    failures: list[dict] = []
     for i, true_id in enumerate(query_ids):
         idxs = top_idxs_np[i].tolist()
         top_ids = [gallery_ids[j] for j in idxs]
@@ -195,40 +149,102 @@ def evaluate_retrieval(
 
         if true_id not in top_ids[:1]:
             true_rank = next((r for r, cid in enumerate(top_ids, start=1) if cid == true_id), None)
-            failures.append(
-                {
-                    "image_path": str(query_paths[i]),
-                    "true_id": true_id,
-                    "predicted_id": top_ids[0] if top_ids else "",
-                    "score": top_scores[0] if top_scores else None,
-                    "score_type": "cosine_similarity",
-                    "true_rank": true_rank,
-                }
-            )
+            failures.append({
+                "image_path": str(query_paths[i]),
+                "true_id": true_id,
+                "predicted_id": top_ids[0] if top_ids else "",
+                "score": top_scores[0] if top_scores else None,
+                "score_type": "cosine_similarity",
+                "true_rank": true_rank,
+            })
 
     n = len(query_ids)
-    metrics = {
-        "top1": hit1 / n,
-        "top3": hit3 / n,
-        "top10": hit10 / n,
-        "n_queries": n,
-        "n_gallery": len(gallery_ids),
-    }
+    metrics = {"top1": hit1 / n, "top3": hit3 / n, "top10": hit10 / n,
+               "n_queries": n, "n_gallery": len(gallery_ids)}
     return metrics, failures
 
 
-def load_manifest_gallery(manifest_csv: Path) -> tuple[list[Path], list[str]]:
+def evaluate_retrieval(
+    *,
+    model: torch.nn.Module,
+    gallery_paths: list[Path],
+    query_paths: list[Path],
+    # criteria: dict of criterion_name -> (gallery_ids, query_ids)
+    # Supports any number of match criteria evaluated from a single embedding pass.
+    # Standard keys: "edition" (card_id match), "artwork" (illustration_id match)
+    criteria: dict[str, tuple[list[str], list[str]]],
+    device: torch.device,
+    batch_size: int,
+    image_size: int,
+    label: str = "model",
+    gallery_cache_root: Path | None = None,
+    query_cache_root: Path | None = None,
+    rebuild_cache: bool = False,
+    use_fp16: bool = True,
+) -> dict[str, tuple[dict, list[dict]]]:
+    """Embed gallery and queries once; evaluate all criteria from the same embeddings.
+
+    Returns: dict of criterion_name -> (metrics_dict, failures_list)
+    """
+    gallery_cache = gallery_cache_root / f"{label}_gallery.npz" if gallery_cache_root is not None else None
+    query_cache = query_cache_root / f"{label}_query_solring.npz" if query_cache_root is not None else None
+
+    g = embed_paths(
+        model, gallery_paths, device=device, batch_size=batch_size,
+        image_size=image_size, desc=f"{label}: gallery",
+        cache_path=gallery_cache, rebuild_cache=rebuild_cache,
+    )
+    q = embed_paths(
+        model, query_paths, device=device, batch_size=batch_size,
+        image_size=image_size, desc=f"{label}: query",
+        cache_path=query_cache, rebuild_cache=rebuild_cache,
+    )
+
+    # Empty result for all criteria if no data
+    first_gallery_ids = next(iter(criteria.values()))[0] if criteria else []
+    first_query_ids = next(iter(criteria.values()))[1] if criteria else []
+    if not criteria or len(first_query_ids) == 0 or g.shape[0] == 0 or q.shape[0] == 0:
+        return {
+            name: ({"top1": 0.0, "top3": 0.0, "top10": 0.0,
+                    "n_queries": len(q_ids), "n_gallery": len(g_ids)}, [])
+            for name, (g_ids, q_ids) in criteria.items()
+        }
+
+    dtype = torch.float16 if (use_fp16 and device.type in {"mps", "cuda"}) else torch.float32
+    g_dev = g.to(device=device, dtype=dtype)
+    q_dev = q.to(device=device, dtype=dtype)
+
+    sims = q_dev @ g_dev.T
+    k = min(10, g_dev.shape[0])
+    top_scores_t, top_idxs_t = torch.topk(sims, k=k, dim=1)
+    top_scores_np = top_scores_t.to("cpu", dtype=torch.float32).numpy()
+    top_idxs_np = top_idxs_t.to("cpu").numpy()
+
+    results: dict[str, tuple[dict, list[dict]]] = {}
+    for name, (gallery_ids, query_ids) in criteria.items():
+        metrics, failures = _compute_hits(top_idxs_np, top_scores_np, gallery_ids, query_ids, query_paths)
+        results[name] = (metrics, failures)
+    return results
+
+
+def load_manifest_gallery(manifest_csv: Path) -> tuple[list[Path], list[str], list[str]]:
+    """Load gallery from manifest CSV.
+
+    Returns: (paths, card_ids, illustration_ids)
+    """
     import csv
 
     paths: list[Path] = []
-    ids: list[str] = []
+    card_ids: list[str] = []
+    illustration_ids: list[str] = []
     with manifest_csv.open("r", newline="", encoding="utf-8") as f:
         for r in csv.DictReader(f):
             p = Path(r["image_path"])
             if p.exists():
                 paths.append(p)
-                ids.append(str(r["card_id"]).lower())
-    return paths, ids
+                card_ids.append(str(r["card_id"]).lower())
+                illustration_ids.append(str(r.get("illustration_id", "")).lower())
+    return paths, card_ids, illustration_ids
 
 
 def load_solring_queries(dataset_dir: Path) -> tuple[list[Path], list[str]]:

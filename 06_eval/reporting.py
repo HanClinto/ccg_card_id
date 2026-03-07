@@ -31,7 +31,7 @@ def _json_default(obj: Any) -> Any:
 
 
 def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fields = ["algorithm_variant", "topk", "correct", "total", "accuracy", "bytes_per_card"]
+    fields = ["algorithm_variant", "criterion", "topk", "correct", "total", "accuracy", "bytes_per_card"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
@@ -94,12 +94,14 @@ def write_overview_markdown(path: Path, summary_rows: list[dict[str, Any]]) -> N
     lines: list[str] = []
     lines.append("# Evaluation overview")
     lines.append("")
-    lines.append("| algorithm_variant | top-k | correct | total | accuracy | bytes/card |")
-    lines.append("|---|---:|---:|---:|---:|---:|")
+    lines.append("| algorithm_variant | criterion | top-k | correct | total | accuracy | bytes/card |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|")
 
-    for row in sorted(summary_rows, key=lambda r: (r["algorithm_variant"], r["topk"])):
+    for row in sorted(summary_rows, key=lambda r: (r["algorithm_variant"], r.get("criterion", ""), r["topk"])):
         lines.append(
-            f"| {row['algorithm_variant']} | {row['topk']} | {row['correct']} | {row['total']} | {row['accuracy'] * 100:.2f}% | {row.get('bytes_per_card','-')} |"
+            f"| {row['algorithm_variant']} | {row.get('criterion', '')} "
+            f"| {row['topk']} | {row['correct']} | {row['total']} "
+            f"| {row['accuracy'] * 100:.2f}% | {row.get('bytes_per_card','-')} |"
         )
 
     lines.append("")
@@ -132,6 +134,7 @@ def update_central_result_csvs(
         "benchmark",
         "dataset",
         "algorithm_variant",
+        "criterion",
         "topk",
         "correct",
         "total",
@@ -153,6 +156,7 @@ def update_central_result_csvs(
             "benchmark": benchmark,
             "dataset": dataset,
             "algorithm_variant": r.get("algorithm_variant"),
+            "criterion": r.get("criterion", ""),
             "topk": r.get("topk"),
             "correct": r.get("correct"),
             "total": r.get("total"),
@@ -168,11 +172,12 @@ def update_central_result_csvs(
         for row in history_rows:
             writer.writerow({k: row.get(k) for k in fields})
 
-    latest_by_key: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    latest_by_key: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for row in history_rows:
         key = (
             str(row.get("benchmark", "")),
             str(row.get("algorithm_variant", "")),
+            str(row.get("criterion", "")),
             str(row.get("topk", "")),
             str(row.get("dataset", "")),
         )
@@ -182,7 +187,7 @@ def update_central_result_csvs(
 
     latest_rows = sorted(
         latest_by_key.values(),
-        key=lambda r: (str(r.get("benchmark", "")), str(r.get("algorithm_variant", "")), str(r.get("topk", ""))),
+        key=lambda r: (str(r.get("benchmark", "")), str(r.get("algorithm_variant", "")), str(r.get("criterion", "")), str(r.get("topk", ""))),
     )
     with latest_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
