@@ -32,8 +32,26 @@ def pick_device(force_cpu: bool = False) -> torch.device:
 
 
 def _discover_latest_checkpoint(results_root: Path) -> Path | None:
-    cands = sorted(results_root.glob("mobilevit_xxs_arcface_*/last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    cands = sorted(results_root.glob("mobilevit_xxs_*/last.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0] if cands else None
+
+
+def _discover_checkpoints_every_n_epochs(results_root: Path, every: int = 5) -> list[Path]:
+    checkpoints: list[tuple[int, Path]] = []
+    for run_dir in sorted(results_root.glob("mobilevit_xxs_*")):
+        if not run_dir.is_dir():
+            continue
+        for ckpt in sorted(run_dir.glob("epoch_*.pt")):
+            try:
+                epoch = int(ckpt.stem.split("_")[-1])
+            except ValueError:
+                continue
+            if every > 0 and (epoch % every != 0):
+                continue
+            checkpoints.append((epoch, ckpt))
+
+    checkpoints.sort(key=lambda x: (x[0], str(x[1])))
+    return [p for _, p in checkpoints]
 
 
 def main() -> None:
@@ -41,6 +59,7 @@ def main() -> None:
     p.add_argument("--manifest", type=Path, default=cfg.data_dir / "mobilevit_xxs" / "manifest.csv")
     p.add_argument("--dataset", type=Path, default=cfg.data_dir / "datasets" / "solring")
     p.add_argument("--results-root", type=Path, default=cfg.data_dir / "results" / "mobilevit_xxs")
+    p.add_argument("--checkpoint-every", type=int, default=5, help="When auto-discovering, include epoch checkpoints every N epochs")
     p.add_argument("--checkpoint", type=Path, action="append", default=[])
     p.add_argument("--skip-base", action="store_true")
     p.add_argument("--batch-size", type=int, default=32)
@@ -54,12 +73,19 @@ def main() -> None:
         raise FileNotFoundError(f"Manifest not found: {args.manifest}")
 
     if not args.checkpoint:
-        auto_ckpt = _discover_latest_checkpoint(args.results_root)
-        if auto_ckpt is not None:
-            args.checkpoint = [auto_ckpt]
-            print(f"Auto-discovered checkpoint: {auto_ckpt}")
+        auto_ckpts = _discover_checkpoints_every_n_epochs(args.results_root, every=args.checkpoint_every)
+        if auto_ckpts:
+            args.checkpoint = auto_ckpts
+            print(f"Auto-discovered {len(auto_ckpts)} checkpoint(s) every {args.checkpoint_every} epochs")
+            for ckpt in auto_ckpts:
+                print(f"  - {ckpt}")
+        else:
+            latest_ckpt = _discover_latest_checkpoint(args.results_root)
+            if latest_ckpt is not None:
+                args.checkpoint = [latest_ckpt]
+                print(f"No epoch_XXXX.pt checkpoints found; falling back to latest checkpoint: {latest_ckpt}")
 
-    gallery_paths, _ = load_manifest_gallery(args.manifest)
+    gallery_paths, _, _ = load_manifest_gallery(args.manifest)
     query_paths, _ = load_solring_queries(args.dataset)
     device = pick_device(force_cpu=args.cpu)
 

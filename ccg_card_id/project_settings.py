@@ -35,4 +35,4 @@ def get_data_dir() -> Path:
     explicit = os.environ.get("CCG_DATA_DIR")
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return (get_data_root() / "ccg_card_id").resolve()
+    return (get_data_root()).resolve()
