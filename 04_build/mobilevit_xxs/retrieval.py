@@ -247,6 +247,30 @@ def load_manifest_gallery(manifest_csv: Path) -> tuple[list[Path], list[str], li
     return paths, card_ids, illustration_ids
 
 
+def load_query_manifest(manifest_csv: Path) -> tuple[list[Path], list[str], list[str]]:
+    """Load a query manifest CSV.
+
+    Expected columns: image_path, card_id, illustration_id
+    Missing images are silently skipped.
+
+    Returns: (paths, card_ids, illustration_ids)
+    """
+    import csv
+
+    paths: list[Path] = []
+    card_ids: list[str] = []
+    illustration_ids: list[str] = []
+    with manifest_csv.open("r", newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            p = Path(r["image_path"])
+            if not p.exists():
+                continue
+            paths.append(p)
+            card_ids.append(str(r.get("card_id", "")).lower())
+            illustration_ids.append(str(r.get("illustration_id", "")).lower())
+    return paths, card_ids, illustration_ids
+
+
 def load_solring_queries(dataset_dir: Path) -> tuple[list[Path], list[str]]:
     aligned = dataset_dir / "04_data" / "aligned"
     paths = sorted([p for p in aligned.glob("*.jpg")])

@@ -31,7 +31,7 @@ def _json_default(obj: Any) -> Any:
 
 
 def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fields = ["algorithm_variant", "criterion", "topk", "correct", "total", "accuracy", "bytes_per_card"]
+    fields = ["algorithm_variant", "query_dataset", "criterion", "topk", "correct", "total", "accuracy", "bytes_per_card"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
@@ -94,12 +94,13 @@ def write_overview_markdown(path: Path, summary_rows: list[dict[str, Any]]) -> N
     lines: list[str] = []
     lines.append("# Evaluation overview")
     lines.append("")
-    lines.append("| algorithm_variant | criterion | top-k | correct | total | accuracy | bytes/card |")
-    lines.append("|---|---|---:|---:|---:|---:|---:|")
+    lines.append("| algorithm_variant | query_dataset | criterion | top-k | correct | total | accuracy | bytes/card |")
+    lines.append("|---|---|---|---:|---:|---:|---:|---:|")
 
-    for row in sorted(summary_rows, key=lambda r: (r["algorithm_variant"], r.get("criterion", ""), r["topk"])):
+    for row in sorted(summary_rows, key=lambda r: (r["algorithm_variant"], r.get("query_dataset", ""), r.get("criterion", ""), r["topk"])):
         lines.append(
-            f"| {row['algorithm_variant']} | {row.get('criterion', '')} "
+            f"| {row['algorithm_variant']} | {row.get('query_dataset', '')} "
+            f"| {row.get('criterion', '')} "
             f"| {row['topk']} | {row['correct']} | {row['total']} "
             f"| {row['accuracy'] * 100:.2f}% | {row.get('bytes_per_card','-')} |"
         )

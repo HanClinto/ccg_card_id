@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
-"""Evaluate MobileViT-XXS retrieval accuracy on the Sol Ring query set.
+"""Evaluate MobileViT-XXS retrieval accuracy across multiple query datasets.
 
-Reports two accuracy metrics for each model variant:
+Reports two accuracy metrics for each model variant × query dataset:
 
   artwork  — query matches any gallery card sharing the same illustration_id
-             (tests whether the model can identify the artwork regardless of printing)
+             (tests artwork identification regardless of printing)
 
-  edition  — query must match the exact same card (card_id / Scryfall UUID)
-             (tests whether the model can distinguish specific printings)
+  edition  — query must match the exact same card (Scryfall card_id)
+             (tests printing-level identification)
+
+Built-in query dataset:
+  solring  — homography-aligned Sol Ring video frames (--dataset)
+
+Extra query datasets (pass any number of --query-manifest name=path/to/manifest.csv):
+  daniel           datasets/daniel_scans/query_manifest.csv
+  clint_backgrounds datasets/clint_cards_with_backgrounds/query_manifest.csv
+  munchie          datasets/munchie/manifest.csv
+
+Build query manifests first:
+  python 02_data_sets/daniel_scans/code/01_build_query_manifest.py
+  python 02_data_sets/clint_cards_with_backgrounds/code/01_build_query_manifest.py
+  python 02_data_sets/munchie/code/03_build_manifest.py
 """
 from __future__ import annotations
 
@@ -36,10 +49,11 @@ from retrieval import (  # type: ignore
     evaluate_retrieval,
     load_finetuned_model,
     load_manifest_gallery,
+    load_query_manifest,
     load_solring_queries,
 )
 
-DEFAULT_DATASET = cfg.data_dir / "datasets" / "solring"
+DEFAULT_SOLRING_DATASET = cfg.data_dir / "datasets" / "solring"
 DEFAULT_OUTPUT_ROOT = cfg.data_dir / "results" / "eval"
 DEFAULT_MANIFEST = cfg.data_dir / "mobilevit_xxs" / "manifest.csv"
 DEFAULT_MOBILEVIT_RESULTS = cfg.data_dir / "results" / "mobilevit_xxs"
@@ -93,12 +107,33 @@ def _build_card_to_illustration(manifest_csv: Path) -> dict[str, str]:
     return mapping
 
 
+def _parse_query_manifest_args(specs: list[str]) -> list[tuple[str, Path]]:
+    """Parse 'name=path/to/manifest.csv' args into (name, path) pairs."""
+    result: list[tuple[str, Path]] = []
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(f"--query-manifest must be 'name=path', got: {spec!r}")
+        name, path_str = spec.split("=", 1)
+        result.append((name.strip(), Path(path_str.strip())))
+    return result
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
-        description="Evaluate MobileViT-XXS retrieval (artwork + edition accuracy)"
+        description="Evaluate MobileViT-XXS retrieval across multiple query datasets"
     )
-    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    p.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST,
+                   help="Gallery manifest CSV (Scryfall reference images)")
+    p.add_argument("--dataset", type=Path, default=DEFAULT_SOLRING_DATASET,
+                   help="Sol Ring dataset dir (built-in query source)")
+    p.add_argument("--skip-solring", action="store_true",
+                   help="Skip the built-in Sol Ring query set")
+    p.add_argument(
+        "--query-manifest", action="append", default=[], metavar="NAME=PATH",
+        help="Extra query manifest: 'name=path/to/manifest.csv'. Repeatable. "
+             "Manifest must have columns: image_path, card_id, illustration_id. "
+             "Example: --query-manifest daniel=/data/datasets/daniel_scans/query_manifest.csv",
+    )
     p.add_argument("--checkpoint", type=Path, action="append", default=[])
     p.add_argument("--results-root", type=Path, default=DEFAULT_MOBILEVIT_RESULTS)
     p.add_argument("--checkpoint-every", type=int, default=5)
@@ -110,7 +145,6 @@ def main() -> None:
     p.add_argument("--run-id", type=str, default=None)
     p.add_argument("--worst-n", type=int, default=20)
     p.add_argument("--gallery-cache-root", type=Path, default=None)
-    p.add_argument("--query-cache-root", type=Path, default=None)
     p.add_argument("--rebuild-cache", action="store_true")
     p.add_argument("--fp16", dest="fp16", action="store_true")
     p.add_argument("--no-fp16", dest="fp16", action="store_false")
@@ -122,10 +156,10 @@ def main() -> None:
     if not args.manifest.exists():
         raise FileNotFoundError(
             f"Manifest not found: {args.manifest}\n"
-            "Build it with: python 04_build/mobilevit_xxs/01_build_manifest.py  "
-            "(for scryfall-only manifest.csv)"
+            "Build it with: python 04_build/mobilevit_xxs/01_build_manifest.py"
         )
 
+    # Resolve checkpoints
     if args.skip_finetuned:
         args.checkpoint = []
     elif not args.checkpoint:
@@ -145,105 +179,124 @@ def main() -> None:
             else:
                 print(f"No checkpoints found under {args.results_root}")
 
-    # Load gallery — card_ids and illustration_ids from manifest
+    # Load gallery
     gallery_paths, gallery_card_ids, gallery_illus_ids = load_manifest_gallery(args.manifest)
-
-    # Load sol_ring queries (card_ids from filenames)
-    query_paths, query_card_ids = load_solring_queries(args.dataset)
-
-    # Map query card_ids → illustration_ids via manifest lookup
     card_to_illus = _build_card_to_illustration(args.manifest)
-    query_illus_ids = [card_to_illus.get(cid, "") for cid in query_card_ids]
 
-    n_artwork_lookups = sum(1 for x in query_illus_ids if x)
-    print(f"Query illustration_id lookup: {n_artwork_lookups}/{len(query_card_ids)} resolved")
-    if n_artwork_lookups < len(query_card_ids):
-        print("  WARNING: some query card_ids not found in manifest — artwork accuracy may be understated")
+    # Collect query sources: list of (name, paths, card_ids, illus_ids, cache_dir)
+    QuerySource = tuple  # (name, paths, card_ids, illus_ids, cache_dir)
+    query_sources: list[QuerySource] = []
+
+    if not args.skip_solring and args.dataset.exists():
+        q_paths, q_card_ids = load_solring_queries(args.dataset)
+        q_illus_ids = [card_to_illus.get(cid, "") for cid in q_card_ids]
+        n_resolved = sum(1 for x in q_illus_ids if x)
+        print(f"solring: {len(q_paths)} queries, {n_resolved}/{len(q_paths)} illustration_ids resolved")
+        cache_dir = args.dataset / "cache" / "mobilevit_xxs" / f"img{args.image_size}"
+        query_sources.append(("solring", q_paths, q_card_ids, q_illus_ids, cache_dir))
+
+    for name, manifest_path in _parse_query_manifest_args(args.query_manifest):
+        if not manifest_path.exists():
+            print(f"WARNING: query manifest not found, skipping {name}: {manifest_path}")
+            continue
+        q_paths, q_card_ids, q_illus_ids = load_query_manifest(manifest_path)
+        # Fill in any missing illustration_ids from gallery manifest lookup
+        q_illus_ids = [
+            illus if illus else card_to_illus.get(cid, "")
+            for illus, cid in zip(q_illus_ids, q_card_ids)
+        ]
+        n_resolved = sum(1 for x in q_illus_ids if x)
+        print(f"{name}: {len(q_paths)} queries, {n_resolved}/{len(q_paths)} illustration_ids resolved")
+        cache_dir = manifest_path.parent / "cache" / "mobilevit_xxs" / f"img{args.image_size}"
+        query_sources.append((name, q_paths, q_card_ids, q_illus_ids, cache_dir))
+
+    if not query_sources:
+        print("No query sources available. Exiting.")
+        return
 
     device = pick_device(force_cpu=args.cpu)
-    print(f"Manifest: {args.manifest}")
-    print(f"Dataset:  {args.dataset}")
-    print(f"Gallery:  {len(gallery_paths)} images")
-    print(f"Queries:  {len(query_paths)} images")
-    print(f"Device:   {device}")
-
     gallery_cache_root = args.gallery_cache_root or (
         cfg.data_dir / "vectors" / "mobilevit_xxs" / f"img{args.image_size}"
         / f"gallery_manifest_{args.manifest.stem}"
     )
-    query_cache_root = args.query_cache_root or (
-        args.dataset / "cache" / "mobilevit_xxs" / f"img{args.image_size}"
-    )
     gallery_cache_root.mkdir(parents=True, exist_ok=True)
-    query_cache_root.mkdir(parents=True, exist_ok=True)
 
-    # Evaluation criteria: embed once, score both
-    criteria = {
-        "artwork": (gallery_illus_ids, query_illus_ids),
-        "edition": (gallery_card_ids, query_card_ids),
-    }
+    print(f"Manifest: {args.manifest}")
+    print(f"Gallery:  {len(gallery_paths)} images")
+    print(f"Device:   {device}")
+    print(f"Query sources: {[s[0] for s in query_sources]}")
 
-    summary_rows: list[dict] = []
-    failures_all: list[dict] = []
+    all_summary_rows: list[dict] = []
+    all_failures: list[dict] = []
 
-    def _run_eval(model: torch.nn.Module, variant: str, emb_dim: int) -> None:
-        results = evaluate_retrieval(
-            model=model,
-            gallery_paths=gallery_paths,
-            query_paths=query_paths,
-            criteria=criteria,
-            device=device,
-            batch_size=args.batch_size,
-            image_size=args.image_size,
-            label=variant,
-            gallery_cache_root=gallery_cache_root,
-            query_cache_root=query_cache_root,
-            rebuild_cache=args.rebuild_cache,
-            use_fp16=args.fp16,
-        )
-        for criterion_name, (metrics, failures) in results.items():
-            print(
-                f"[{variant}][{criterion_name}] "
-                f"top1={metrics['top1']:.4f}  top3={metrics['top3']:.4f}  top10={metrics['top10']:.4f}"
+    def _run_model(model: torch.nn.Module, variant: str, emb_dim: int) -> None:
+        for (qs_name, q_paths, q_card_ids, q_illus_ids, query_cache_dir) in query_sources:
+            query_cache_dir.mkdir(parents=True, exist_ok=True)
+            criteria = {
+                "artwork": (gallery_illus_ids, q_illus_ids),
+                "edition": (gallery_card_ids, q_card_ids),
+            }
+            results = evaluate_retrieval(
+                model=model,
+                gallery_paths=gallery_paths,
+                query_paths=q_paths,
+                criteria=criteria,
+                device=device,
+                batch_size=args.batch_size,
+                image_size=args.image_size,
+                label=f"{variant}_{qs_name}",
+                gallery_cache_root=gallery_cache_root,
+                query_cache_root=query_cache_dir,
+                rebuild_cache=args.rebuild_cache,
+                use_fp16=args.fp16,
             )
-            for k in (1, 3, 10):
-                summary_rows.append({
-                    "algorithm_variant": variant,
-                    "criterion": criterion_name,
-                    "topk": k,
-                    "correct": int(round(metrics[f"top{k}"] * metrics["n_queries"])),
-                    "total": metrics["n_queries"],
-                    "accuracy": metrics[f"top{k}"],
-                    "bytes_per_card": emb_dim * 4,
-                })
-            for f in failures:
-                path = Path(str(f.get("image_path", "")))
-                rel = (
-                    str(path.relative_to(args.dataset))
-                    if path.is_absolute() and str(path).startswith(str(args.dataset))
-                    else str(f.get("image_path", ""))
+            for criterion_name, (metrics, failures) in results.items():
+                print(
+                    f"[{variant}][{qs_name}][{criterion_name}] "
+                    f"top1={metrics['top1']:.4f}  top3={metrics['top3']:.4f}  top10={metrics['top10']:.4f}"
                 )
-                failures_all.append({
-                    "algorithm_variant": variant,
-                    "criterion": criterion_name,
-                    "topk": 1,
-                    **f,
-                    "image_path": rel,
-                })
+                for k in (1, 3, 10):
+                    all_summary_rows.append({
+                        "algorithm_variant": variant,
+                        "query_dataset": qs_name,
+                        "criterion": criterion_name,
+                        "topk": k,
+                        "correct": int(round(metrics[f"top{k}"] * metrics["n_queries"])),
+                        "total": metrics["n_queries"],
+                        "accuracy": metrics[f"top{k}"],
+                        "bytes_per_card": emb_dim * 4,
+                    })
+                for f in failures:
+                    path = Path(str(f.get("image_path", "")))
+                    # Try to make path relative to query source dir for readability
+                    try:
+                        rel = str(path.relative_to(query_cache_dir.parent.parent.parent))
+                    except ValueError:
+                        rel = str(f.get("image_path", ""))
+                    all_failures.append({
+                        "algorithm_variant": variant,
+                        "query_dataset": qs_name,
+                        "criterion": criterion_name,
+                        "topk": 1,
+                        **f,
+                        "image_path": rel,
+                    })
 
     if not args.skip_base:
         print("Running base MobileViT-XXS...")
         base = BackboneFeatureModel("mobilevit_xxs").to(device).eval()
-        _run_eval(base, "mobilevit_xxs_base_320d", emb_dim=320)
+        _run_model(base, "mobilevit_xxs_base_320d", emb_dim=320)
 
     for ckpt in args.checkpoint:
         print(f"Running fine-tuned checkpoint: {ckpt}")
         model, ckpt_meta = load_finetuned_model(ckpt, device)
         emb_dim = int(ckpt_meta.get("args", {}).get("embedding_dim", 128))
         epoch = int(ckpt_meta.get("epoch", 0))
-        label_field = str(ckpt_meta.get("label_field", ckpt_meta.get("args", {}).get("label_field", "card_id")))
+        label_field = str(ckpt_meta.get(
+            "label_field", ckpt_meta.get("args", {}).get("label_field", "card_id")
+        ))
         variant = f"mobilevit_xxs_ft_{label_field}_e{epoch}_{emb_dim}d"
-        _run_eval(model, variant, emb_dim=emb_dim)
+        _run_model(model, variant, emb_dim=emb_dim)
 
     if args.no_write_results:
         return
@@ -252,42 +305,46 @@ def main() -> None:
     payload = {
         "meta": {
             "script": "06_eval/04_eval_mobilevit_xxs.py",
-            "dataset": str(args.dataset),
-            "manifest": str(args.manifest),
+            "gallery_manifest": str(args.manifest),
+            "query_sources": [s[0] for s in query_sources],
             "checkpoints": [str(c) for c in args.checkpoint],
             "skip_base": args.skip_base,
         },
-        "summary": summary_rows,
+        "summary": all_summary_rows,
     }
 
-    write_summary_csv(out_dir / "summary.csv", summary_rows)
+    write_summary_csv(out_dir / "summary.csv", all_summary_rows)
     write_summary_json(out_dir / "summary.json", payload)
-    write_failures_jsonl(out_dir / "failures.jsonl", failures_all)
-    write_overview_markdown(out_dir / "overview.md", summary_rows)
+    write_failures_jsonl(out_dir / "failures.jsonl", all_failures)
+    write_overview_markdown(out_dir / "overview.md", all_summary_rows)
 
-    update_central_result_csvs(
-        output_root=args.output_root,
-        summary_rows=summary_rows,
-        benchmark="mobilevit_retrieval",
-        dataset=str(args.dataset),
-        run_id=out_dir.name,
-    )
+    # Update central CSVs per query dataset
+    for qs_name in {r["query_dataset"] for r in all_summary_rows}:
+        qs_rows = [r for r in all_summary_rows if r["query_dataset"] == qs_name]
+        update_central_result_csvs(
+            output_root=args.output_root,
+            summary_rows=qs_rows,
+            benchmark="mobilevit_retrieval",
+            dataset=qs_name,
+            run_id=out_dir.name,
+        )
 
-    by_variant_summary: dict[str, list[dict]] = {}
-    by_variant_failures: dict[str, list[dict]] = {}
-    for row in summary_rows:
-        key = f"{row['algorithm_variant']}_{row['criterion']}"
-        by_variant_summary.setdefault(key, []).append(row)
-    for row in failures_all:
-        key = f"{row['algorithm_variant']}_{row['criterion']}"
-        by_variant_failures.setdefault(key, []).append(row)
+    # Per-variant per-dataset markdown files
+    groups: dict[str, list[dict]] = {}
+    failure_groups: dict[str, list[dict]] = {}
+    for row in all_summary_rows:
+        key = f"{row['algorithm_variant']}_{row['query_dataset']}_{row['criterion']}"
+        groups.setdefault(key, []).append(row)
+    for row in all_failures:
+        key = f"{row['algorithm_variant']}_{row['query_dataset']}_{row['criterion']}"
+        failure_groups.setdefault(key, []).append(row)
 
-    for key, rows in sorted(by_variant_summary.items()):
+    for key, rows in sorted(groups.items()):
         write_algorithm_markdown(
             out_dir / f"{key}.md",
             algorithm_variant=key,
             summary_rows=rows,
-            failures=by_variant_failures.get(key, []),
+            failures=failure_groups.get(key, []),
             top_n=args.worst_n,
         )
 
