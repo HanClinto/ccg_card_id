@@ -21,6 +21,11 @@ class ManifestRow:
     card_name: str
     set_code: str
     split: str
+    # Extended fields — empty string when not present (backwards-compatible)
+    illustration_id: str = ""
+    oracle_id: str = ""
+    lang: str = ""
+    source: str = ""
 
 
 def deterministic_split(card_id: str, train: float, val: float, seed: int) -> str:
@@ -94,18 +99,21 @@ def build_manifest_from_scryfall(
                 card_name=str(card.get("name", "")).strip(),
                 set_code=str(card.get("set", "")).strip(),
                 split=deterministic_split(card_id, train_ratio, val_ratio, seed),
+                illustration_id=str(card.get("illustration_id", "") or ""),
+                oracle_id=str(card.get("oracle_id", "") or ""),
+                lang=str(card.get("lang", "") or ""),
+                source="scryfall",
             )
         )
 
+    _FIELDNAMES = ["image_path", "card_id", "card_name", "set_code", "split",
+                   "illustration_id", "oracle_id", "lang", "source"]
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["image_path", "card_id", "card_name", "set_code", "split"],
-        )
+        writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
         writer.writeheader()
         for r in rows:
-            writer.writerow(r.__dict__)
+            writer.writerow({k: getattr(r, k) for k in _FIELDNAMES})
 
     by_split = {"train": 0, "val": 0, "test": 0}
     for r in rows:
@@ -132,6 +140,10 @@ def load_manifest(path: Path, split: str | None = None) -> list[ManifestRow]:
                 card_name=row.get("card_name", ""),
                 set_code=row.get("set_code", ""),
                 split=row.get("split", "train"),
+                illustration_id=row.get("illustration_id", ""),
+                oracle_id=row.get("oracle_id", ""),
+                lang=row.get("lang", ""),
+                source=row.get("source", ""),
             )
             if split is None or r.split == split:
                 out.append(r)

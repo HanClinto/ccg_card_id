@@ -142,7 +142,7 @@ def evaluate_retrieval(
     use_fp16: bool = True,
 ) -> tuple[dict, list[dict]]:
     gallery_cache = gallery_cache_root / f"{label}_gallery.npz" if gallery_cache_root is not None else None
-    query_cache = query_cache_root / f"{label}_query.npz" if query_cache_root is not None else None
+    query_cache = query_cache_root / f"{label}_query_solring.npz" if query_cache_root is not None else None
 
     g = embed_paths(
         model,
