@@ -266,6 +266,11 @@ def run(args: argparse.Namespace) -> None:
             criterion.load_state_dict(ckpt["criterion"])
         if "optimizer" in ckpt:
             optim.load_state_dict(ckpt["optimizer"])
+        # Reset LR to args.lr so the new cosine cycle starts from the right point.
+        # Without this, the scheduler would inherit the final (very low) LR from
+        # the previous run and schedule from there to near-zero — useless.
+        for pg in optim.param_groups:
+            pg["lr"] = args.lr
         prior_epoch = int(ckpt.get("epoch", 0))
         start_epoch = prior_epoch + 1
         if history_path.exists():
