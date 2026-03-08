@@ -358,7 +358,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arcface-margin", type=float, default=0.3)
     p.add_argument("--arcface-scale", type=float, default=32.0)
     p.add_argument("--image-size", type=int, default=224)
-    p.add_argument("--num-workers", type=int, default=0)
+    p.add_argument("--num-workers", type=int, default=4,
+                   help="DataLoader worker processes (default: 4; use 0 on MPS if you hit issues)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume-checkpoint", type=Path, default=None,
                    help="Explicit checkpoint to resume from")

@@ -46,6 +46,8 @@ from reporting import (
 )
 from retrieval import (  # type: ignore
     BackboneFeatureModel,
+    compute_phash_embeddings,
+    evaluate_phash_retrieval,
     evaluate_retrieval,
     load_finetuned_model,
     load_manifest_gallery,
@@ -151,6 +153,11 @@ def main() -> None:
     p.set_defaults(fp16=True)
     p.add_argument("--no-write-results", action="store_true")
     p.add_argument("--cpu", action="store_true")
+    p.add_argument("--phash-sizes", nargs="+", type=int, default=[8, 16, 32],
+                   help="pHash grid sizes to evaluate (default: 8 16 32). "
+                        "8=64-bit, 16=256-bit, 32=1024-bit.")
+    p.add_argument("--skip-phash", action="store_true",
+                   help="Skip pHash baseline evaluation")
     args = p.parse_args()
 
     if not args.manifest.exists():
@@ -298,6 +305,64 @@ def main() -> None:
         ))
         variant = f"mobilevit_xxs_ft_{label_field}_e{epoch}_{emb_dim}d"
         _run_model(model, variant, emb_dim=emb_dim)
+
+    if not args.skip_phash:
+        phash_gallery_cache_root = (
+            cfg.data_dir / "vectors" / "phash" / f"gallery_manifest_{args.manifest.stem}"
+        )
+        phash_gallery_cache_root.mkdir(parents=True, exist_ok=True)
+        for hash_size in args.phash_sizes:
+            bits = hash_size * hash_size
+            variant = f"phash_{hash_size}x{hash_size}_{bits}bit"
+            print(f"Running pHash {hash_size}x{hash_size} ({bits}-bit)...")
+            for (qs_name, q_paths, q_card_ids, q_illus_ids, query_cache_dir) in query_sources:
+                query_cache_dir.mkdir(parents=True, exist_ok=True)
+                phash_query_cache = query_cache_dir / f"{variant}_{qs_name}_query.npz"
+                criteria = {
+                    "artwork": (gallery_illus_ids, q_illus_ids),
+                    "edition": (gallery_card_ids, q_card_ids),
+                }
+                results = evaluate_phash_retrieval(
+                    gallery_paths=gallery_paths,
+                    query_paths=q_paths,
+                    criteria=criteria,
+                    hash_size=hash_size,
+                    gallery_label=variant,
+                    label=f"{variant}_{qs_name}",
+                    gallery_cache_root=phash_gallery_cache_root,
+                    query_cache_root=query_cache_dir,
+                    rebuild_cache=args.rebuild_cache,
+                )
+                for criterion_name, (metrics, failures) in results.items():
+                    print(
+                        f"[{variant}][{qs_name}][{criterion_name}] "
+                        f"top1={metrics['top1']:.4f}  top3={metrics['top3']:.4f}  top10={metrics['top10']:.4f}"
+                    )
+                    for k in (1, 3, 10):
+                        all_summary_rows.append({
+                            "algorithm_variant": variant,
+                            "query_dataset": qs_name,
+                            "criterion": criterion_name,
+                            "topk": k,
+                            "correct": int(round(metrics[f"top{k}"] * metrics["n_queries"])),
+                            "total": metrics["n_queries"],
+                            "accuracy": metrics[f"top{k}"],
+                            "bytes_per_card": (bits + 7) // 8,
+                        })
+                    for f in failures:
+                        path = Path(str(f.get("image_path", "")))
+                        try:
+                            rel = str(path.relative_to(query_cache_dir.parent.parent.parent))
+                        except ValueError:
+                            rel = str(f.get("image_path", ""))
+                        all_failures.append({
+                            "algorithm_variant": variant,
+                            "query_dataset": qs_name,
+                            "criterion": criterion_name,
+                            "topk": 1,
+                            **f,
+                            "image_path": rel,
+                        })
 
     if args.no_write_results:
         return

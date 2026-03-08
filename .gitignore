@@ -216,6 +216,10 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# YouTube OAuth credentials (never commit these)
+client_secrets.json
+youtube_token.json
+
 # Project specific
 data/
 data_cache/
