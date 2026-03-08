@@ -9,6 +9,7 @@ Stages:
                Distinguishes different printings of the same card.
 
 Usage:
+  python 02_train.py --lr-find                    # LR range test (~2 min, then exit)
   python 02_train.py                              # artwork_id, 10 epochs
   python 02_train.py --label-field card_id        # printing_id stage
   python 02_train.py --epochs 5                   # run 5 more epochs (resumes)
@@ -20,7 +21,9 @@ Checkpoints and training history are written under:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import random
 import sys
 from pathlib import Path
@@ -46,14 +49,18 @@ _STD = [0.229, 0.224, 0.225]
 
 
 def _train_transform(image_size: int) -> transforms.Compose:
-    """Heavy augmentation to simulate real-world scan/photo conditions."""
+    """Augmentation for card identification.
+
+    No horizontal/vertical flips — card orientation carries information.
+    Small rotation (±5°) and perspective simulate real-world capture angles.
+    """
     return transforms.Compose([
-        transforms.RandomResizedCrop(image_size, scale=(0.75, 1.0), ratio=(0.9, 1.1)),
-        transforms.RandomHorizontalFlip(p=0.05),
+        transforms.RandomResizedCrop(image_size, scale=(0.85, 1.0), ratio=(0.92, 1.08)),
+        transforms.RandomAffine(degrees=5, translate=(0.03, 0.03), scale=(0.97, 1.03)),
+        transforms.RandomPerspective(distortion_scale=0.1, p=0.3),
         transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.05),
         transforms.RandomGrayscale(p=0.05),
         transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-        transforms.RandomAffine(degrees=3, translate=(0.03, 0.03), scale=(0.97, 1.03)),
         transforms.ToTensor(),
         transforms.Normalize(mean=_MEAN, std=_STD),
     ])
@@ -81,6 +88,89 @@ class ImageLabelDataset(Dataset):
         y = self.label_to_idx[label_val]
         img = Image.open(r.image_path).convert("RGB")
         return self.transform(img), y
+
+
+# ---------------------------------------------------------------------------
+# LR range test
+# ---------------------------------------------------------------------------
+
+def lr_find(
+    model: torch.nn.Module,
+    criterion: torch.nn.Module,
+    dl: DataLoader,
+    device: torch.device,
+    start_lr: float = 1e-7,
+    end_lr: float = 1e-1,
+    n_steps: int = 100,
+    smoothing: float = 0.9,
+) -> float:
+    """LR range test (fastai-style). Returns suggested LR."""
+    model_state = copy.deepcopy(model.state_dict())
+    criterion_state = copy.deepcopy(criterion.state_dict())
+
+    params = list(model.parameters()) + list(criterion.parameters())
+    optim = torch.optim.AdamW(params, lr=start_lr)
+    lr_mult = (end_lr / start_lr) ** (1.0 / n_steps)
+    lr = start_lr
+
+    best_loss = float("inf")
+    avg_loss = 0.0
+    lrs: list[float] = []
+    losses: list[float] = []
+
+    data_iter = iter(dl)
+    model.train()
+    criterion.train()
+
+    print(f"LR finder: sweeping {start_lr:.0e} → {end_lr:.0e} over {n_steps} steps")
+    for step in range(n_steps):
+        try:
+            x, y = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dl)
+            x, y = next(data_iter)
+
+        for pg in optim.param_groups:
+            pg["lr"] = lr
+
+        x, y = x.to(device), y.to(device)
+        z = model(x)
+        loss = criterion(z, y)
+        optim.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(params, max_norm=5.0)
+        optim.step()
+
+        loss_val = loss.item()
+        avg_loss = smoothing * avg_loss + (1 - smoothing) * loss_val
+        smooth = avg_loss / (1 - smoothing ** (step + 1))  # bias correction
+        lrs.append(lr)
+        losses.append(smooth)
+
+        if smooth < best_loss:
+            best_loss = smooth
+        elif step > 10 and smooth > 4 * best_loss:
+            print(f"  diverging at lr={lr:.2e}, stopping early")
+            break
+
+        lr *= lr_mult
+
+    # Restore weights
+    model.load_state_dict(model_state)
+    criterion.load_state_dict(criterion_state)
+
+    min_idx = losses.index(min(losses))
+    # Suggest LR slightly before minimum (steepest descent region)
+    suggested_idx = max(0, min_idx - max(1, len(lrs) // 10))
+    suggested_lr = lrs[suggested_idx]
+
+    print(f"\n{'LR':>10}  {'Loss':>10}")
+    step_size = max(1, len(lrs) // 20)
+    for i in range(0, len(lrs), step_size):
+        marker = " <-- suggested" if i == suggested_idx else ""
+        print(f"  {lrs[i]:8.2e}  {losses[i]:10.4f}{marker}")
+    print(f"\nSuggested LR: {suggested_lr:.2e}  (min loss {min(losses):.4f} at {lrs[min_idx]:.2e})")
+    return suggested_lr
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +241,10 @@ def run(args: argparse.Namespace) -> None:
     params = list(model.parameters()) + list(criterion.parameters())
     optim = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
 
+    if args.lr_find:
+        lr_find(model, criterion, dl, device)
+        return
+
     run_dir = args.output_dir / f"{args.backbone}_{args.label_field}_{args.embedding_dim}d"
     run_dir.mkdir(parents=True, exist_ok=True)
     history_path = run_dir / "train_history.json"
@@ -182,6 +276,14 @@ def run(args: argparse.Namespace) -> None:
         print(f"resuming from epoch {prior_epoch}")
 
     end_epoch = start_epoch + args.epochs - 1
+    total_steps = (end_epoch - start_epoch + 1) * len(dl)
+    scheduler = None
+    if args.scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optim, T_max=total_steps, eta_min=args.lr * 0.01,
+        )
+        print(f"cosine LR schedule: {args.lr:.2e} → {args.lr * 0.01:.2e} over {total_steps} steps")
+
     for epoch in range(start_epoch, end_epoch + 1):
         model.train()
         criterion.train()
@@ -195,13 +297,16 @@ def run(args: argparse.Namespace) -> None:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(params, max_norm=5.0)
             optim.step()
+            if scheduler is not None:
+                scheduler.step()
             bs = x.shape[0]
             total_loss += loss.item() * bs
             n += bs
 
         avg_loss = total_loss / max(1, n)
-        history.append({"epoch": epoch, "loss": avg_loss})
-        print(f"epoch={epoch} loss={avg_loss:.4f}")
+        cur_lr = optim.param_groups[0]["lr"]
+        history.append({"epoch": epoch, "loss": avg_loss, "lr": cur_lr})
+        print(f"epoch={epoch} loss={avg_loss:.4f} lr={cur_lr:.2e}")
 
         # Write history after every epoch so partial runs are preserved
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
@@ -261,6 +366,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Ignore last.pt auto-resume and train from scratch")
     p.add_argument("--checkpoint-every", type=int, default=5,
                    help="Save epoch_XXXX.pt every N epochs (0 disables)")
+    p.add_argument("--scheduler", default="cosine", choices=["none", "cosine"],
+                   help="LR scheduler (default: cosine)")
+    p.add_argument("--lr-find", action="store_true",
+                   help="Run LR range test and exit (does not save checkpoints)")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--no-pretrained", action="store_true")
     return p
