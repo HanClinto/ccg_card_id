@@ -245,6 +245,7 @@ def main() -> None:
                 batch_size=args.batch_size,
                 image_size=args.image_size,
                 label=f"{variant}_{qs_name}",
+                gallery_label=variant,
                 gallery_cache_root=gallery_cache_root,
                 query_cache_root=query_cache_dir,
                 rebuild_cache=args.rebuild_cache,

@@ -177,6 +177,7 @@ def evaluate_retrieval(
     batch_size: int,
     image_size: int,
     label: str = "model",
+    gallery_label: str | None = None,
     gallery_cache_root: Path | None = None,
     query_cache_root: Path | None = None,
     rebuild_cache: bool = False,
@@ -184,10 +185,14 @@ def evaluate_retrieval(
 ) -> dict[str, tuple[dict, list[dict]]]:
     """Embed gallery and queries once; evaluate all criteria from the same embeddings.
 
+    gallery_label: cache key for gallery embeddings (defaults to label). Use the
+    model variant name here so the gallery cache is shared across query datasets.
+
     Returns: dict of criterion_name -> (metrics_dict, failures_list)
     """
-    gallery_cache = gallery_cache_root / f"{label}_gallery.npz" if gallery_cache_root is not None else None
-    query_cache = query_cache_root / f"{label}_query_solring.npz" if query_cache_root is not None else None
+    _gallery_label = gallery_label if gallery_label is not None else label
+    gallery_cache = gallery_cache_root / f"{_gallery_label}_gallery.npz" if gallery_cache_root is not None else None
+    query_cache = query_cache_root / f"{label}_query.npz" if query_cache_root is not None else None
 
     g = embed_paths(
         model, gallery_paths, device=device, batch_size=batch_size,
