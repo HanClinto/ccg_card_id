@@ -1,125 +1,168 @@
-# MobileViT-XXS Pipeline (Build + Train + Eval)
+# MobileViT-XXS Training Pipeline
 
-This is the canonical MobileViT-XXS workflow in the main project structure.
+Metric-learning pipeline for CCG card identification using MobileViT-XXS + ArcFace loss.
 
-## Stage map
+---
 
-| Stage | Script | Purpose | Primary outputs |
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `01_build_manifest.py` | Build reproducible train/val/test manifest CSV from Scryfall images + real-world datasets |
+| `02_train.py` | Single-task ArcFace training (one label field at a time) |
+| `03_train_multitask.py` | Multi-task ArcFace training (shared backbone, one head per label field) |
+| `models.py` | `EmbeddingNet`, `MultiTaskEmbeddingNet`, `ArcFaceLoss`, `build_backbone` |
+| `data.py` | `ManifestRow`, `load_manifest`, `build_manifest_from_scryfall` |
+| `retrieval.py` | Embedding + pHash eval utilities used by `06_eval/` |
+
+Evaluation lives in **`06_eval/04_eval_mobilevit_xxs.py`** — runs all model variants and pHash baselines across multiple query datasets and writes CSV/Markdown reports.
+
+---
+
+## Training phases
+
+The intended training progression is hierarchical, each phase building on the previous:
+
+| Phase | Label field | Classes | Notes |
 |---|---|---|---|
-| 1 | `01_build_manifest.py` | Build reproducible train/val/test manifest | `.../mobilevit_xxs/manifest.csv` |
-| 2 | `02_build_triplets.py` | Build task-balanced triplets + hard negatives | `.../mobilevit_xxs/triplets.csv`, `.../mobilevit_xxs/hard_negatives.json` |
-| 3 | `03_train_arcface.py` | Train MobileViT-XXS ArcFace embedding model | `.../results/mobilevit_xxs/mobilevit_xxs_arcface_<dim>/last.pt`, `train_history.json` |
-| 4 | `04_eval_retrieval.py` | Evaluate one fine-tuned checkpoint on Sol Ring retrieval | `retrieval_summary.json/csv`, `retrieval_predictions.jsonl` |
-| 5 | `05_compare_models.py` | Compare base backbone vs one/more fine-tuned checkpoints | `comparison.json`, `comparison.csv` |
+| 1 — Artwork ID | `illustration_id` | ~20 k | Groups all printings sharing the same artwork. Train first. |
+| 2 — Joint (art + set) | `illustration_id` + `set_code` | ~20 k + ~1 k | Multi-task from scratch; teaches both artwork and set-frame features simultaneously. |
+| 3 — Edition ID | `card_id` (or `set_code`) | ~1 k sets / 108 k cards | Distinguishes specific printings. Use `set_code` as ArcFace classes (100–300 samples/class) rather than `card_id` (1 sample/class). |
+| 4 — Language ID | `lang` | ~20 | Future. |
 
-For consolidated cross-algorithm reporting (pHash vs DINO vs MobileViT), run:
-- `06_eval/04_eval_mobilevit_xxs.py`
-
-For explicit vector precompute/build stage, run:
-- `05_build/01_precompute_mobilevit_vectors.py`
+**Why `set_code` instead of `card_id` for edition training:**
+ArcFace needs multiple samples per class. `card_id` has ~1 Scryfall image per card (108 k one-sample classes → diverges). `set_code` has ~100–300 cards per set (~900 classes → well-suited for ArcFace). Combined with an artwork embedding, this gives printing-level retrieval.
 
 ---
 
-## Data/output defaults
+## Single-task training (`02_train.py`)
 
-- Manifest/triplets default root: `~/claw/data/ccg_card_id/mobilevit_xxs/`
-- Training results default root (if you pass it): `~/claw/data/ccg_card_id/results/mobilevit_xxs/`
-- Sol Ring eval queries: `~/claw/data/ccg_card_id/datasets/solring/04_data/aligned`
+```bash
+# Artwork ID — train from scratch
+python 02_train.py \
+  --manifest $DATA/mobilevit_xxs/artwork_id_manifest.csv \
+  --label-field illustration_id \
+  --lr 2e-3 --epochs 15 --batch-size 64 \
+  --scheduler cosine --checkpoint-every 5
 
-Use absolute paths (e.g., `/Volumes/carbonite/...`) if your data lives on external storage.
+# LR range test first (recommended before a new phase)
+python 02_train.py --manifest ... --label-field illustration_id --lr-find
+
+# Continue training (auto-resumes from last.pt; fresh cosine cycle from --lr)
+python 02_train.py --manifest ... --label-field illustration_id \
+  --lr 2e-3 --epochs 15
+
+# Train from scratch, ignoring any existing checkpoint
+python 02_train.py --manifest ... --rebuild
+```
+
+Checkpoint directory: `<output-dir>/<backbone>_<label_field>_<dim>d/`
+e.g. `results/mobilevit_xxs/mobilevit_xxs_illustration_id_128d/`
+
+**LR schedule note:** On resume, `--lr` is always used as the starting LR for the new cosine cycle regardless of where the previous run ended. This gives a clean warm-restart each time.
 
 ---
 
-## Caching/resume behavior (project standards)
+## Multi-task training (`03_train_multitask.py`)
 
-### 1) `01_build_manifest.py`
-- If output CSV already exists, script returns cached result by default.
-- Use `--rebuild-cache` to force regenerate.
+Trains a shared MobileViT-XXS backbone with one ArcFace head per task. Two embedding modes:
 
-### 2) `02_build_triplets.py`
-- Hard-negative mining resumes by default from `--out-hard-negs-json`.
-- Writes periodic checkpoints during long runs.
-- Use `--no-resume` to rebuild from scratch.
+```
+shared (default)    backbone → [one projection] → z (128-d) → ArcFace_task0
+                                                             → ArcFace_task1
+                    One vector at query time. Tasks share the same embedding space.
 
-### 3) `03_train_arcface.py`
-- Auto-resumes from `<run_dir>/last.pt` by default when present.
-- Explicit resume supported with `--resume-checkpoint`.
-- Use `--rebuild-cache` to ignore previous checkpoint and train from scratch.
+separate-heads      backbone → [proj_0] → z₀ (128-d) → ArcFace_task0
+                             → [proj_1] → z₁  (64-d) → ArcFace_task1
+                    Independent embeddings per task (can have different dims).
+                    Concatenate at query time or use the relevant head.
+```
 
-### 4) `04_eval_retrieval.py`
-- Reuses existing `retrieval_summary.json` by default.
-- Use `--rebuild-cache` to recompute embeddings/metrics.
+```bash
+# Joint artwork + set from scratch — shared embedding (recommended first experiment)
+python 03_train_multitask.py \
+  --lr 2e-3 --epochs 15 --batch-size 64 --scheduler cosine
 
-### 5) `05_compare_models.py`
-- Reuses existing `comparison.json` by default.
-- Use `--rebuild-cache` to recompute comparison.
+# Separate projections: 128-d for artwork, 64-d for set
+python 03_train_multitask.py \
+  --separate-heads --embedding-dims 128 64 \
+  --lr 2e-3 --epochs 15
+
+# Custom task weights (down-weight set_code early on)
+python 03_train_multitask.py --task-weights 1.0 0.5
+
+# LR range test
+python 03_train_multitask.py --lr-find
+
+# Resume (auto-detects last.pt; resets LR to --lr for fresh cosine cycle)
+python 03_train_multitask.py --lr 2e-3 --epochs 15
+
+# Change label fields (any ManifestRow column with enough samples)
+python 03_train_multitask.py --label-fields illustration_id set_code lang
+```
+
+Checkpoint directory: `<backbone>_multitask_<fields>_<mode>_<dims>/`
+e.g. `mobilevit_xxs_multitask_illustration_id+set_code_shared_128d/`
+e.g. `mobilevit_xxs_multitask_illustration_id+set_code_sep_128d+64d/`
 
 ---
 
-## Example commands
+## Seed checkpoints
 
-### 1) Build manifest
+Well-trained intermediate checkpoints are copied to `results/mobilevit_xxs/seeds/`
+for use as transfer-learning starting points. Pass with `--resume-checkpoint`.
 
-```bash
-cd 04_build/mobilevit_xxs
-python 01_build_manifest.py \
-  --out /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/manifest.csv
-```
-
-### 2) Build triplets
-
-```bash
-python 02_build_triplets.py \
-  --out-csv /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/triplets.csv \
-  --out-hard-negs-json /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/hard_negatives.json
-```
-
-### 3) Train (initial)
+| Checkpoint | Epochs | Suggested use |
+|---|---|---|
+| `artwork_id_e10_128d.pt` | 10 | General card features; best seed for language ID |
+| `artwork_id_e15_128d.pt` | 15 | End of first cosine cycle |
+| `artwork_id_e20_128d.pt` | 20 | Start of second cycle; good balance for edition/set ID |
+| `artwork_id_e25_128d.pt` | 25 | Strong artwork; recommended seed for edition/set training |
+| `artwork_id_e30_128d.pt` | 30 | End of second cycle |
 
 ```bash
-python 03_train_arcface.py \
-  --manifest /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/manifest.csv \
-  --triplets-csv /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/triplets.csv \
-  --task-weights card_id=0.6,set_id=0.25,lang_id=0.15 \
-  --output-dir /Volumes/carbonite/claw/data/ccg_card_id/results/mobilevit_xxs \
-  --backbone mobilevit_xxs \
-  --embedding-dim 128 \
-  --image-size 192 \
-  --epochs 5 \
-  --batch-size 16
+# Start edition training from the e25 artwork seed
+python 02_train.py \
+  --resume-checkpoint $DATA/results/mobilevit_xxs/seeds/artwork_id_e25_128d.pt \
+  --label-field set_code \
+  --lr 2e-3 --epochs 15 --rebuild
 ```
 
-### 3b) Train (resume additional epochs)
+---
+
+## Evaluation
+
+Run from the project root. Auto-discovers all checkpoints under `--results-root`.
 
 ```bash
-python 03_train_arcface.py \
-  --manifest /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/manifest.csv \
-  --triplets-csv /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/triplets.csv \
-  --output-dir /Volumes/carbonite/claw/data/ccg_card_id/results/mobilevit_xxs \
-  --backbone mobilevit_xxs \
-  --embedding-dim 128 \
-  --epochs 3
+DATA=/Volumes/carbonite/claw/data/ccg_card_id
+
+python 06_eval/04_eval_mobilevit_xxs.py \
+  --manifest $DATA/mobilevit_xxs/manifest.csv \
+  --query-manifest daniel=$DATA/datasets/daniel_scans/query_manifest.csv \
+  --query-manifest clint_backgrounds=$DATA/datasets/clint_cards_with_backgrounds/query_manifest.csv \
+  --query-manifest munchie=$DATA/datasets/munchie/manifest.csv
+
+# Skip base model and pHash (faster, just fine-tuned checkpoints)
+python 06_eval/04_eval_mobilevit_xxs.py ... --skip-base --skip-phash
+
+# pHash sizes to evaluate (default: 8 16 32 → 64/256/1024-bit)
+python 06_eval/04_eval_mobilevit_xxs.py ... --phash-sizes 8 16 32
 ```
 
-(That command auto-resumes from `last.pt` unless `--rebuild-cache` is provided.)
+Two accuracy criteria per query dataset:
+- **artwork** — query matches any gallery card sharing the same `illustration_id`
+- **edition** — query matches the exact `card_id`
 
-### 4) Evaluate one checkpoint
+Results written to `results/eval/<timestamp>/`: `summary.csv`, `overview.md`, `failures.jsonl`, per-variant markdown files, and cumulative `history_results.csv` / `latest_results.csv`.
 
-```bash
-python 04_eval_retrieval.py \
-  --checkpoint /Volumes/carbonite/claw/data/ccg_card_id/results/mobilevit_xxs/mobilevit_xxs_arcface_128/last.pt \
-  --manifest /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/manifest.csv \
-  --solring-dir /Volumes/carbonite/claw/data/ccg_card_id/datasets/solring/04_data/aligned \
-  --out-dir /Volumes/carbonite/claw/data/ccg_card_id/results/mobilevit_xxs/mobilevit_xxs_arcface_128/eval_solring
-```
+---
 
-### 5) Compare base vs fine-tuned
+## Manifest
 
-```bash
-python 05_compare_models.py \
-  --manifest /Volumes/carbonite/claw/data/ccg_card_id/mobilevit_xxs/manifest.csv \
-  --out-dir /Volumes/carbonite/claw/data/ccg_card_id/results/mobilevit_xxs/comparisons \
-  --solring-dir /Volumes/carbonite/claw/data/ccg_card_id/datasets/solring/04_data/aligned \
-  --base-backbone mobilevit_xxs \
-  --checkpoint /Volumes/carbonite/claw/data/ccg_card_id/results/mobilevit_xxs/mobilevit_xxs_arcface_128/last.pt
-```
+The `artwork_id_manifest.csv` used for training combines Scryfall reference images and
+real-world Munchie scanner scans, filtered to `illustration_id`s with ≥ 2 samples:
+
+- ~81 k rows, ~20.5 k unique `illustration_id` classes
+- Split: 69.7 k train / 8 k val / 4 k test (by `illustration_id`)
+- Built by `01_build_manifest.py` (see that script for rebuild instructions)
