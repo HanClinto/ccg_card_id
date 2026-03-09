@@ -125,7 +125,7 @@ def main() -> None:
             cols = ["video_id", "slug", "url", "channel", "title", "set_codes", "status", "added_date", "notes"]
             con.execute(
                 f"INSERT OR REPLACE INTO videos ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})",
-                [v["video_id"], slug, v["url"], channel, v["title"], "", "pending", today, ""],
+                [v["video_id"], slug, v["url"], channel, v["title"], "", "new", today, ""],
             )
         con.commit()
         print("done.")
@@ -134,8 +134,8 @@ def main() -> None:
         print(f"\nDry run — {len(new_videos)} videos would be added.")
     else:
         print(f"\nAdded {len(new_videos)} videos to {db_path}")
-        print("Next: run 02_annotate.py to classify titles with Claude,")
-        print("      or edit the DB directly to fill in set_codes and mark videos 'pending'.")
+        print("Next: run 02_annotate.py to classify titles and promote MTG videos to 'pending'.")
+        print("      Or set set_codes + status='pending' manually in the DB for specific videos.")
 
 
 if __name__ == "__main__":

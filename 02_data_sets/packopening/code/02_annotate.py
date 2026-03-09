@@ -222,12 +222,11 @@ def main() -> None:
 
     if args.re_annotate:
         rows = con.execute(
-            "SELECT * FROM videos WHERE status NOT IN ('skip','done','processing')"
+            "SELECT * FROM videos WHERE status NOT IN ('skip','done','processing','downloading','downloaded','frames_extracted')"
         ).fetchall()
     else:
         rows = con.execute(
-            "SELECT * FROM videos WHERE (set_codes IS NULL OR set_codes = '')"
-            " AND status NOT IN ('skip','done','processing')"
+            "SELECT * FROM videos WHERE status = 'new'"
         ).fetchall()
 
     if args.limit:

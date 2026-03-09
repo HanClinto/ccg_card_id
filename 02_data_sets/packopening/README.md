@@ -61,7 +61,7 @@ The master list of videos to process lives in a public Google Sheet:
 | `title` | Video title (auto-populated by `00_fetch_channel.py`) |
 | `set_codes` | Comma-separated Scryfall set codes (e.g., `lea` or `otj,otp,big`) |
 | `set_notes` | Freeform (e.g., "pre-release kit — includes buy-a-box promo") |
-| `status` | `pending` / `downloading` / `processing` / `done` / `error` / `skip` |
+| `status` | `new` → `pending` → `downloading` → `downloaded` → `frames_extracted` → `processing` → `done` / `error` / `skip` / `needs_review` |
 | `frames_extracted` | Count of clean frames extracted |
 | `frames_matched` | Count of frames with confirmed card match |
 | `contributor` | Who added this row |
