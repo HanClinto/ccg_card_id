@@ -105,6 +105,47 @@ def classify_batch_anthropic(titles: list[str], client) -> list[dict]:
     return results
 
 
+def _is_content_filter_error(e: Exception) -> bool:
+    """True if the exception is an Azure content-filter rejection."""
+    msg = str(e)
+    return "content_filter" in msg or "ResponsibleAIPolicyViolation" in msg or "content management policy" in msg
+
+
+_FALLBACK = {"is_mtg": None, "set_codes": [], "confidence": "error", "notes": "skipped"}
+
+
+def classify_with_recovery(titles: list[str], classify_fn) -> list[dict]:
+    """Classify a list of titles, recovering from failures by splitting recursively.
+
+    On any error (count mismatch, content filter, API error):
+      - If batch size > 1: split in half and retry each half independently.
+      - If batch size == 1: mark that title as 'error' and move on.
+
+    Always returns a list of exactly len(titles) dicts.
+    """
+    if not titles:
+        return []
+
+    try:
+        results = classify_fn(titles)
+        # Validate count — treat mismatch as an error requiring recovery
+        if len(results) != len(titles):
+            raise ValueError(f"count mismatch: expected {len(titles)}, got {len(results)}")
+        return results
+    except Exception as e:
+        if len(titles) == 1:
+            # Can't split further — mark this one item as unclassifiable
+            reason = "content_filter" if _is_content_filter_error(e) else f"error: {e}"
+            print(f"\n    [skip 1 title — {reason}]: {titles[0][:60]}")
+            return [{**_FALLBACK, "notes": reason}]
+
+        # Split and retry each half
+        mid = len(titles) // 2
+        left = classify_with_recovery(titles[:mid], classify_fn)
+        right = classify_with_recovery(titles[mid:], classify_fn)
+        return left + right
+
+
 def build_client():
     """Return (classify_fn, backend_name). Prefers Azure, falls back to Anthropic."""
     # Load .env
@@ -202,15 +243,12 @@ def main() -> None:
     for i in range(0, len(rows), args.batch_size):
         batch_rows = rows[i : i + args.batch_size]
         titles = [r["title"] for r in batch_rows]
-        print(f"  Batch {i // args.batch_size + 1} ({len(titles)} titles)...", end=" ", flush=True)
+        batch_num = i // args.batch_size + 1
+        total_batches = (len(rows) + args.batch_size - 1) // args.batch_size
+        print(f"  Batch {batch_num}/{total_batches} ({len(titles)} titles)...", end=" ", flush=True)
 
-        try:
-            results = classify_fn(titles)
-            print("OK")
-        except Exception as e:
-            print(f"ERROR: {e}")
-            errors += len(batch_rows)
-            continue
+        results = classify_with_recovery(titles, classify_fn)
+        print("OK")
 
         for row, cls in zip(batch_rows, results):
             is_mtg = cls.get("is_mtg")
@@ -218,7 +256,11 @@ def main() -> None:
             confidence = cls.get("confidence", "low")
             notes = cls.get("notes", "")
 
-            if is_mtg is False and confidence in ("high", "medium"):
+            if confidence == "error":
+                new_status = "needs_review"
+                set_codes_str = ""
+                errors += 1
+            elif is_mtg is False and confidence in ("high", "medium"):
                 new_status = "skip"
                 set_codes_str = ""
                 skipped += 1
