@@ -84,13 +84,46 @@ def load_sift_features(npz_path: Path):
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Pre-compute SIFT features for a Scryfall set")
-    p.add_argument("--set-code", required=True,
-                   help="Comma-separated set code(s), e.g. 'lea' or 'otj,otp,big'")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--set-code",
+                        help="Space/comma-separated set code(s), e.g. 'lea' or '2x2 t2x2'")
+    source.add_argument("--video-id",
+                        help="Look up set codes from the DB for this YouTube video ID")
+    source.add_argument("--all", action="store_true",
+                        help="Precompute for all set codes present in the DB (pending/downloaded/etc.)")
     p.add_argument("--rebuild", action="store_true")
     p.add_argument("--data-dir", type=Path, default=cfg.data_dir)
     args = p.parse_args()
 
-    set_codes = [s for s in re.split(r"[\s,]+", args.set_code.strip().lower()) if s]
+    db_path = args.data_dir / "datasets" / "packopening" / "packopening.db"
+
+    if args.set_code:
+        set_codes = [s for s in re.split(r"[\s,]+", args.set_code.strip().lower()) if s]
+    else:
+        # Import db helper (sibling of this script's parent)
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("db", Path(__file__).parents[1] / "db.py")
+        _db = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_db)
+        con = _db.open_db(db_path)
+
+        if args.video_id:
+            row = con.execute("SELECT set_codes, title FROM videos WHERE video_id=?",
+                              (args.video_id,)).fetchone()
+            if not row or not row["set_codes"]:
+                print(f"ERROR: video_id '{args.video_id}' not found or has no set_codes.", file=sys.stderr)
+                sys.exit(1)
+            print(f"  [{args.video_id}] {row['title'][:70]}")
+            set_codes = [s for s in re.split(r"[\s,]+", row["set_codes"].strip().lower()) if s]
+        else:  # --all
+            rows = con.execute(
+                "SELECT set_codes FROM videos WHERE set_codes IS NOT NULL AND set_codes != ''"
+            ).fetchall()
+            set_codes = sorted({
+                code
+                for row in rows
+                for code in re.split(r"[\s,]+", row["set_codes"].strip().lower())
+                if code
+            })
     cache_root = args.data_dir / "datasets" / "packopening" / "sift_cache"
 
     print(f"Loading cards for sets: {set_codes}")
