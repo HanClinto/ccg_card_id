@@ -74,6 +74,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Extract and blur-filter keyframes")
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--slug")
+    group.add_argument("--video-id", help="YouTube video ID")
     group.add_argument("--all", action="store_true", help="Process all 'downloaded' videos")
     p.add_argument("--rebuild", action="store_true")
     p.add_argument("--blur-threshold", type=float, default=BLUR_THRESHOLD)
@@ -90,10 +91,16 @@ def main() -> None:
         if not videos:
             print("No videos with status 'downloaded'.")
             return
-    else:
+    elif args.slug:
         v = con.execute("SELECT * FROM videos WHERE slug=?", (args.slug,)).fetchone()
         if not v:
             print(f"ERROR: slug '{args.slug}' not in DB.", file=sys.stderr)
+            sys.exit(1)
+        videos = [v]
+    else:
+        v = con.execute("SELECT * FROM videos WHERE video_id=?", (args.video_id,)).fetchone()
+        if not v:
+            print(f"ERROR: video_id '{args.video_id}' not in DB.", file=sys.stderr)
             sys.exit(1)
         videos = [v]
 
