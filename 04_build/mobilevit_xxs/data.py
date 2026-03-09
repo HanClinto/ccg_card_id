@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import json
 import random
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from tqdm import tqdm
+
+# catalog is imported lazily inside build_manifest_from_scryfall so this module
+# can be imported without requiring the DB to exist yet.
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
@@ -61,28 +64,28 @@ def _find_image_for_card(image_index: dict[str, list[Path]], card_id: str) -> Pa
 
 def build_manifest_from_scryfall(
     *,
-    default_cards_json: Path,
     images_root: Path,
     out_csv: Path,
     train_ratio: float = 0.85,
     val_ratio: float = 0.1,
     seed: int = 42,
+    lang: str = "en",
+    # Legacy parameter kept for call-site compatibility — ignored when catalog is available
+    default_cards_json: Path | None = None,
     english_only: bool = True,
 ) -> dict[str, int]:
-    data = json.loads(default_cards_json.read_text(encoding="utf-8"))
+    from ccg_card_id.catalog import catalog as _catalog
+
+    # Resolve effective language filter
+    effective_lang = lang if lang else ("en" if english_only else None)
+
+    data = _catalog.all_cards(lang=effective_lang)
     image_index = _build_image_index(images_root)
 
     rows: list[ManifestRow] = []
     missing_image = 0
-    skipped_lang = 0
 
-    for card in tqdm(data, desc=f"build manifest {default_cards_json.name}", unit="card"):
-        if card.get("image_status") in {"missing", "placeholder"}:
-            continue
-        if english_only and card.get("lang") != "en":
-            skipped_lang += 1
-            continue
-
+    for card in tqdm(data, desc="build manifest", unit="card"):
         card_id = str(card.get("id", "")).strip()
         if not card_id:
             continue
@@ -97,7 +100,7 @@ def build_manifest_from_scryfall(
                 image_path=str(img),
                 card_id=card_id,
                 card_name=str(card.get("name", "")).strip(),
-                set_code=str(card.get("set", "")).strip(),
+                set_code=str(card.get("set_code", "")).strip(),
                 split=deterministic_split(card_id, train_ratio, val_ratio, seed),
                 illustration_id=str(card.get("illustration_id", "") or ""),
                 oracle_id=str(card.get("oracle_id", "") or ""),
@@ -122,7 +125,6 @@ def build_manifest_from_scryfall(
     return {
         "rows": len(rows),
         "missing_image": missing_image,
-        "skipped_lang": skipped_lang,
         "train": by_split["train"],
         "val": by_split["val"],
         "test": by_split["test"],
