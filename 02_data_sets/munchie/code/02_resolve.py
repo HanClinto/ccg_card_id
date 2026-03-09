@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from ccg_card_id.config import cfg
+from ccg_card_id.catalog import catalog
 
 # ------------------------------------------------------------------
 # Images that should be excluded based on known quality issues.
@@ -61,23 +62,7 @@ def _is_known_bad(name: str) -> str | None:
     return None
 
 
-def _build_en_index(all_cards_json: Path) -> dict[tuple[str, str], list[dict]]:
-    """Build {(name_lower, set_lower): [card_dict, ...]} for English-only cards."""
-    print(f"Loading {all_cards_json} …", flush=True)
-    cards: list[dict] = json.loads(all_cards_json.read_text(encoding="utf-8"))
-    index: dict[tuple[str, str], list[dict]] = {}
-    for c in cards:
-        if c.get("lang") != "en":
-            continue
-        if c.get("image_status") in {"missing", "placeholder"}:
-            continue
-        key = (c["name"].lower(), c["set"].lower())
-        index.setdefault(key, []).append(c)
-    print(f"Indexed {sum(len(v) for v in index.values())} English cards across {len(index)} (name,set) pairs")
-    return index
-
-
-def _resolve_record(record: dict, index: dict[tuple[str, str], list[dict]]) -> dict:
+def _resolve_record(record: dict) -> dict:
     name = str(record.get("ocrName") or "").strip()
     set_code = str(record.get("set") or "").strip()
     front_file = str(record.get("name") or "").strip()
@@ -95,8 +80,7 @@ def _resolve_record(record: dict, index: dict[tuple[str, str], list[dict]]) -> d
     if bad_reason:
         return {**base, "status": "excluded", "exclude_reason": bad_reason}
 
-    key = (name.lower(), set_code.lower())
-    matches = index.get(key, [])
+    matches = catalog.cards_by_name_set(name, set_code, lang="en")
 
     if len(matches) == 0:
         return {**base, "status": "not_found"}
@@ -145,19 +129,14 @@ def main() -> None:
     args = p.parse_args()
 
     master_path = args.data_dir / "datasets" / "munchie" / "data" / "master.json"
-    all_cards_path = args.data_dir / "all_cards.json"
     out_path = args.data_dir / "datasets" / "munchie" / "resolved.jsonl"
 
     if not master_path.exists():
         raise FileNotFoundError(f"master.json not found: {master_path}")
-    if not all_cards_path.exists():
-        raise FileNotFoundError(f"all_cards.json not found: {all_cards_path}")
 
     if out_path.exists() and not args.rebuild:
         print(f"resolved.jsonl already exists at {out_path}  (pass --rebuild to regenerate)")
         return
-
-    index = _build_en_index(all_cards_path)
 
     master: list[dict] = json.loads(master_path.read_text(encoding="utf-8"))
     print(f"Resolving {len(master)} munchie records …")
@@ -165,7 +144,7 @@ def main() -> None:
     results: list[dict] = []
     counts: dict[str, int] = {}
     for record in master:
-        r = _resolve_record(record, index)
+        r = _resolve_record(record)
         results.append(r)
         counts[r["status"]] = counts.get(r["status"], 0) + 1
 
