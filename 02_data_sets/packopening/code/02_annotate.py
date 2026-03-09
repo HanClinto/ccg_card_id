@@ -46,22 +46,28 @@ from db import open_db
 # Prompt
 # ---------------------------------------------------------------------------
 
-_SYSTEM = """You are a Magic: The Gathering expert classifying pack-opening video titles.
+_SYSTEM = """You are a Magic: The Gathering expert classifying YouTube video titles for a pack-opening dataset.
 
-For each title decide:
-  is_mtg      — true if this is a Magic: The Gathering pack opening / booster opening / unboxing
-  set_codes   — Scryfall set codes (lowercase), e.g. ["lea"] or ["otj","otp","big"]
-                Leave [] if not MTG or you can't determine the set.
-  confidence  — "high" / "medium" / "low"
+For each title return these fields:
+
+  is_mtg      — true if the video is about Magic: The Gathering at all
+  is_opening  — true ONLY if the video physically opens packs/boosters/boxes/cases
+                (e.g. "opening", "cracking", "unboxing", "let's open", "booster pack opened")
+                false for: price discussions, set reviews, spoilers, gameplay, strategy,
+                           "what's in a box" explanations, commentary, vlogs
+  set_codes   — Scryfall set codes (lowercase) for sets being opened, e.g. ["lea"] or ["otj","otp","big"]
+                Leave [] if not an opening or if you can't determine the set.
+  confidence  — "high" / "medium" / "low" (your confidence in set_codes)
   notes       — short freeform note (optional)
 
-Rules:
-- Pre-release kits: include main set + promo set (e.g. OTJ → ["otj","otp","big"])
+Rules for set_codes:
+- Pre-release kits: include main set + promo set (e.g. OTJ pre-release → ["otj","otp","big"])
 - Commander precons: include the commander set code (e.g. "commander legends" → ["cmr"])
-- Collector boosters, set boosters, draft boosters all count as pack openings
+- Collector boosters, set boosters, draft boosters all count
 - If multiple sets in one video, list all
-- Respond ONLY with a JSON array (same length as input), each element:
-  {"is_mtg": bool, "set_codes": [str], "confidence": str, "notes": str}
+
+Respond ONLY with a JSON array (same length as input), each element:
+  {"is_mtg": bool, "is_opening": bool, "set_codes": [str], "confidence": str, "notes": str}
 """
 
 
@@ -251,6 +257,7 @@ def main() -> None:
 
         for row, cls in zip(batch_rows, results):
             is_mtg = cls.get("is_mtg")
+            is_opening = cls.get("is_opening", False)
             set_codes_list = cls.get("set_codes", [])
             confidence = cls.get("confidence", "low")
             notes = cls.get("notes", "")
@@ -259,15 +266,22 @@ def main() -> None:
                 new_status = "needs_review"
                 set_codes_str = ""
                 errors += 1
-            elif is_mtg is False and confidence in ("high", "medium"):
+            elif not is_mtg and confidence in ("high", "medium"):
+                # Confidently not MTG at all
                 new_status = "skip"
                 set_codes_str = ""
                 skipped += 1
-            elif set_codes_list:
+            elif is_mtg and not is_opening:
+                # MTG content but not a pack opening (discussion, review, gameplay, etc.)
+                new_status = "skip"
+                set_codes_str = ""
+                skipped += 1
+            elif is_opening and set_codes_list:
                 new_status = "pending"
                 set_codes_str = ",".join(set_codes_list)
                 updated += 1
             else:
+                # Opening but set unknown, or low confidence
                 new_status = "needs_review"
                 set_codes_str = ""
                 updated += 1
