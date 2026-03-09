@@ -50,12 +50,25 @@ def make_slug(video_id: str, title: str) -> str:
     return f"{video_id}_{short}"
 
 
+def channel_name_from_url(channel_url: str) -> str:
+    """Best-effort channel name from URL.  '@OpenBoosters' → 'OpenBoosters'."""
+    m = re.search(r"@([\w-]+)", channel_url)
+    if m:
+        return m.group(1)
+    # Fall back to last path segment
+    return channel_url.rstrip("/").rsplit("/", 1)[-1]
+
+
 def fetch_channel_videos(channel_url: str) -> list[dict]:
-    """Return [{video_id, url, title, channel}] for all videos on the channel."""
+    """Return [{video_id, url, title}] for all videos on the channel.
+
+    %(uploader)s returns 'NA' in --flat-playlist mode because per-video
+    metadata isn't fetched; the caller supplies the channel name instead.
+    """
     cmd = [
         "yt-dlp",
         "--flat-playlist",
-        "--print", "%(id)s\t%(title)s\t%(uploader)s",
+        "--print", "%(id)s\t%(title)s",
         "--no-warnings",
         channel_url,
     ]
@@ -65,14 +78,13 @@ def fetch_channel_videos(channel_url: str) -> list[dict]:
 
     videos = []
     for line in result.stdout.strip().splitlines():
-        parts = line.split("\t", 2)
+        parts = line.split("\t", 1)
         if not parts[0].strip():
             continue
         videos.append({
             "video_id": parts[0].strip(),
             "url": f"https://www.youtube.com/watch?v={parts[0].strip()}",
             "title": parts[1].strip() if len(parts) > 1 else "",
-            "channel": parts[2].strip() if len(parts) > 2 else "",
         })
     return videos
 
@@ -97,7 +109,8 @@ def main() -> None:
     if con:
         known_ids = {r[0] for r in con.execute("SELECT video_id FROM videos").fetchall()}
 
-    print(f"Fetching video list from: {args.channel_url}")
+    channel = args.channel_name or channel_name_from_url(args.channel_url)
+    print(f"Fetching video list from: {args.channel_url}  (channel: {channel})")
     try:
         videos = fetch_channel_videos(args.channel_url)
     except RuntimeError as e:
@@ -121,7 +134,6 @@ def main() -> None:
         # Insert all rows in a single transaction — much faster than one commit per row
         for v in new_videos:
             slug = make_slug(v["video_id"], v["title"])
-            channel = args.channel_name or v.get("channel", "")
             cols = ["video_id", "slug", "url", "channel", "title", "set_codes", "status", "added_date", "notes"]
             con.execute(
                 f"INSERT OR REPLACE INTO videos ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})",
