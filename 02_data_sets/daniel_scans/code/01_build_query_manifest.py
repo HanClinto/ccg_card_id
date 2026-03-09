@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import re
 import sys
 from pathlib import Path
@@ -28,15 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from ccg_card_id.config import cfg
+from ccg_card_id.catalog import catalog
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
-
-
-def _build_card_index(all_cards_json: Path) -> dict[str, dict]:
-    """Build card_id (lower) -> card dict index from all_cards.json."""
-    print(f"Loading {all_cards_json} ...", flush=True)
-    cards = json.loads(all_cards_json.read_text(encoding="utf-8"))
-    return {str(c["id"]).lower(): c for c in cards if "id" in c}
 
 
 def main() -> None:
@@ -46,13 +39,10 @@ def main() -> None:
     args = p.parse_args()
 
     images_dir = args.data_dir / "datasets" / "daniel_scans" / "images_processed"
-    all_cards_path = args.data_dir / "all_cards.json"
     out_path = args.data_dir / "datasets" / "daniel_scans" / "query_manifest.csv"
 
     if not images_dir.exists():
         raise FileNotFoundError(f"Images dir not found: {images_dir}")
-    if not all_cards_path.exists():
-        raise FileNotFoundError(f"all_cards.json not found: {all_cards_path}")
 
     if out_path.exists() and not args.rebuild:
         with out_path.open() as f:
@@ -60,19 +50,26 @@ def main() -> None:
         print(f"query_manifest.csv already exists ({n} rows). Pass --rebuild to regenerate.")
         return
 
-    card_index = _build_card_index(all_cards_path)
-
     images = sorted(p for p in images_dir.glob("*.jpg"))
-    rows: list[dict] = []
     missing_uuid = 0
     missing_card = 0
 
+    img_card_ids = []
     for img in images:
         m = UUID_RE.search(img.stem)
         if not m:
             missing_uuid += 1
+            img_card_ids.append((img, None))
+        else:
+            img_card_ids.append((img, m.group(0).lower()))
+
+    card_ids = [cid for _, cid in img_card_ids if cid]
+    card_index = catalog.cards_by_ids(card_ids)
+
+    rows: list[dict] = []
+    for img, card_id in img_card_ids:
+        if card_id is None:
             continue
-        card_id = m.group(0).lower()
         card = card_index.get(card_id)
         if card is None:
             missing_card += 1

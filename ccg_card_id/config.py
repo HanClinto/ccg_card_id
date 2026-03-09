@@ -18,7 +18,7 @@ Usage:
 
 from pathlib import Path
 
-from .project_settings import get_data_dir
+from .project_settings import get_data_dir, get_fast_data_dir
 
 # Official Meta DINOv2 model variants (smallest → largest)
 DINOV2_MODELS: dict[str, str] = {
@@ -34,8 +34,11 @@ def _get_data_dir() -> Path:
 
 
 class Config:
-    def __init__(self, data_dir: Path | None = None):
+    def __init__(self, data_dir: Path | None = None, fast_data_dir: Path | None = None):
         self.data_dir: Path = Path(data_dir).resolve() if data_dir else _get_data_dir()
+        self.fast_data_dir: Path = (
+            Path(fast_data_dir).resolve() if fast_data_dir else get_fast_data_dir()
+        )
 
         # Scryfall bulk data files (flat layout — all in data_dir)
         self.scryfall_default_cards: Path = self.data_dir / "default_cards.json"
@@ -43,6 +46,9 @@ class Config:
 
         # Scryfall catalog reference images
         self.scryfall_images_dir: Path = self.data_dir / "catalog" / "scryfall" / "images" / "png"
+
+        # Fast SQLite card catalog (lives on SSD if CCG_FAST_DATA_ROOT is set)
+        self.card_db_path: Path = self.fast_data_dir / "catalog" / "scryfall" / "cards.db"
 
     # ------------------------------------------------------------------
     # Vector file paths — named by method and hash_size grid dimension

@@ -36,3 +36,20 @@ def get_data_dir() -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
     return (get_data_root()).resolve()
+
+
+def get_fast_data_dir() -> Path:
+    """Return a fast-storage directory for derived caches (e.g. SSD).
+
+    Resolution order:
+      1. CCG_FAST_DATA_ROOT env var (point this at your SSD)
+      2. Falls back to CCG_DATA_ROOT (same as regular data dir)
+
+    Set in .env:
+        CCG_FAST_DATA_ROOT=/path/to/ssd/ccg_card_id
+    """
+    _load_dotenv()
+    fast = os.environ.get("CCG_FAST_DATA_ROOT")
+    if fast:
+        return Path(fast).expanduser().resolve()
+    return get_data_dir()

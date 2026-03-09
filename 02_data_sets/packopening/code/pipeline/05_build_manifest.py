@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import re
 import sys
 from pathlib import Path
@@ -26,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(CODE_DIR))
 
 from ccg_card_id.config import cfg
+from ccg_card_id.catalog import catalog
 from db import open_db
 
 MANIFEST_FIELDNAMES = [
@@ -40,16 +40,12 @@ CORNERS_FIELDNAMES = [
 ]
 
 
-def load_card_metadata(data_dir: Path) -> dict[str, dict]:
-    path = data_dir / "default_cards.json"
-    if not path.exists():
-        print("WARNING: default_cards.json not found — card_name/oracle_id will be empty")
-        return {}
-    cards = json.loads(path.read_text(encoding="utf-8"))
+def load_card_metadata(card_ids: list[str]) -> dict[str, dict]:
+    meta = catalog.cards_by_ids(card_ids)
     return {
-        c["id"]: {"card_name": c.get("name",""), "oracle_id": c.get("oracle_id",""),
-                  "illustration_id": c.get("illustration_id","")}
-        for c in cards if "id" in c
+        cid: {"card_name": c.get("name", ""), "oracle_id": c.get("oracle_id", ""),
+              "illustration_id": c.get("illustration_id", "")}
+        for cid, c in meta.items()
     }
 
 
@@ -91,7 +87,8 @@ def main() -> None:
         return
 
     print("Loading card metadata...")
-    meta = load_card_metadata(args.data_dir)
+    unique_card_ids = list({row["card_id"] for row in rows})
+    meta = load_card_metadata(unique_card_ids)
 
     manifest_rows, corners_rows = [], []
     for row in rows:
