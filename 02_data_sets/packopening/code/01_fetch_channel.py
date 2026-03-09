@@ -42,13 +42,12 @@ from db import open_db, upsert_video
 DEFAULT_CHANNEL = "https://www.youtube.com/@OpenBoosters"
 
 
-def make_slug(video_id: str, set_codes: str, title: str) -> str:
-    """Build a filesystem-safe slug: {video_id}_{set_codes}_{short_title}."""
-    sets_part = re.sub(r"[, ]+", "-", set_codes.strip().lower()) if set_codes else "unknown"
+def make_slug(video_id: str, title: str) -> str:
+    """Build a filesystem-safe slug: {video_id}_{short_title}."""
     words = re.sub(r"[^a-zA-Z0-9 ]", " ", title).split()
     short = "-".join(w.lower() for w in words[:5] if len(w) > 1)
     short = re.sub(r"[^a-z0-9]+", "-", short).strip("-")[:40]
-    return f"{video_id}_{sets_part}_{short}"
+    return f"{video_id}_{short}"
 
 
 def fetch_channel_videos(channel_url: str) -> list[dict]:
@@ -121,7 +120,7 @@ def main() -> None:
     else:
         # Insert all rows in a single transaction — much faster than one commit per row
         for v in new_videos:
-            slug = make_slug(v["video_id"], "", v["title"])
+            slug = make_slug(v["video_id"], v["title"])
             channel = args.channel_name or v.get("channel", "")
             cols = ["video_id", "slug", "url", "channel", "title", "set_codes", "status", "added_date", "notes"]
             con.execute(

@@ -46,18 +46,6 @@ from ccg_card_id.config import cfg
 from db import open_db
 
 # ---------------------------------------------------------------------------
-# Slug
-# ---------------------------------------------------------------------------
-
-def make_slug(video_id: str, set_codes: str, title: str) -> str:
-    sets_part = re.sub(r"[, ]+", "-", set_codes.strip().lower()) if set_codes else "unknown"
-    words = re.sub(r"[^a-zA-Z0-9 ]", " ", title).split()
-    short = "-".join(w.lower() for w in words[:5] if len(w) > 1)
-    short = re.sub(r"[^a-z0-9]+", "-", short).strip("-")[:40]
-    return f"{video_id}_{sets_part}_{short}"
-
-
-# ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------
 
@@ -187,7 +175,6 @@ def main() -> None:
                 set_codes_str = ""
                 updated += 1
 
-            new_slug = make_slug(row["video_id"], set_codes_str, row["title"])
             annotation_note = f"[llm] {confidence}"
             if notes:
                 annotation_note += f": {notes}"
@@ -197,8 +184,8 @@ def main() -> None:
                 print(f"    {row['video_id']}  {marker:<25}  {row['title'][:55]}")
             else:
                 con.execute(
-                    "UPDATE videos SET set_codes=?, status=?, slug=?, notes=? WHERE video_id=?",
-                    (set_codes_str, new_status, new_slug, annotation_note, row["video_id"]),
+                    "UPDATE videos SET set_codes=?, status=?, notes=? WHERE video_id=?",
+                    (set_codes_str, new_status, annotation_note, row["video_id"]),
                 )
         if not args.dry_run:
             con.commit()
