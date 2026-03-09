@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def main() -> None:
     where_clauses = ["f.aligned_path IS NOT NULL AND f.aligned_path != ''"]
     params = []
     if args.set_codes:
-        codes = [s.strip().lower() for s in args.set_codes.split(",") if s.strip()]
+        codes = [s for s in re.split(r"[\s,]+", args.set_codes.strip().lower()) if s]
         where_clauses.append(f"f.set_code IN ({','.join(['?']*len(codes))})")
         params.extend(codes)
     if args.video_id:

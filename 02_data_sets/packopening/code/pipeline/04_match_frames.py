@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util as _ilu
+import re
 import sys
 from pathlib import Path
 
@@ -151,7 +152,7 @@ def load_gallery(cache_root: Path, set_codes: list[str]) -> list[dict]:
 def process_video(video: dict, data_dir: Path, con, rebuild: bool = False) -> tuple[int, int]:
     slug = video["slug"]
     video_id = video["video_id"]
-    set_codes = [s.strip().lower() for s in video["set_codes"].split(",") if s.strip()]
+    set_codes = [s for s in re.split(r"[\s,]+", video["set_codes"].strip().lower()) if s]
     if not set_codes:
         print(f"  ERROR: no set_codes for {slug}")
         return 0, 0

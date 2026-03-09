@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -89,7 +90,7 @@ def main() -> None:
     p.add_argument("--data-dir", type=Path, default=cfg.data_dir)
     args = p.parse_args()
 
-    set_codes = [s.strip().lower() for s in args.set_code.split(",") if s.strip()]
+    set_codes = [s for s in re.split(r"[\s,]+", args.set_code.strip().lower()) if s]
     cache_root = args.data_dir / "datasets" / "packopening" / "sift_cache"
 
     print(f"Loading cards for sets: {set_codes}")
