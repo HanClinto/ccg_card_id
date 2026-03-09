@@ -114,24 +114,22 @@ def main() -> None:
         return
 
     today = datetime.date.today().isoformat()
-    for v in new_videos:
-        slug = make_slug(v["video_id"], "", v["title"])
-        channel = args.channel_name or v.get("channel", "")
-        if args.dry_run:
+    print(f"  Writing {len(new_videos)} rows to DB...", end=" ", flush=True)
+    if args.dry_run:
+        for v in new_videos:
             print(f"  WOULD ADD: {v['video_id']}  {v['title'][:70]}")
-        else:
-            upsert_video(
-                con,
-                video_id=v["video_id"],
-                slug=slug,
-                url=v["url"],
-                channel=channel,
-                title=v["title"],
-                set_codes="",
-                status="pending",
-                added_date=today,
-                notes="",
+    else:
+        # Insert all rows in a single transaction — much faster than one commit per row
+        for v in new_videos:
+            slug = make_slug(v["video_id"], "", v["title"])
+            channel = args.channel_name or v.get("channel", "")
+            cols = ["video_id", "slug", "url", "channel", "title", "set_codes", "status", "added_date", "notes"]
+            con.execute(
+                f"INSERT OR REPLACE INTO videos ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})",
+                [v["video_id"], slug, v["url"], channel, v["title"], "", "pending", today, ""],
             )
+        con.commit()
+        print("done.")
 
     if args.dry_run:
         print(f"\nDry run — {len(new_videos)} videos would be added.")
