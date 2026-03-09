@@ -19,6 +19,8 @@ import argparse
 import json
 import re
 import sys
+
+from tqdm import tqdm
 from pathlib import Path
 
 import cv2
@@ -131,20 +133,23 @@ def main() -> None:
     print(f"  {len(cards)} English cards with reference images")
 
     cached = computed = failed = 0
-    for card in cards:
-        out_path = cache_root / card["set_code"] / f"{card['card_id']}.npz"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        if out_path.exists() and not args.rebuild:
-            cached += 1
-            continue
-        kp_array, descs = compute_sift_features(card["image_path"])
-        if kp_array is None:
-            failed += 1
-            continue
-        np.savez_compressed(str(out_path), keypoints=kp_array, descriptors=descs,
-                            card_id=np.array([card["card_id"]]),
-                            illustration_id=np.array([card["illustration_id"]]))
-        computed += 1
+    with tqdm(cards, unit="card", desc="SIFT precompute") as pbar:
+        for card in pbar:
+            out_path = cache_root / card["set_code"] / f"{card['card_id']}.npz"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            if out_path.exists() and not args.rebuild:
+                cached += 1
+                pbar.set_postfix(computed=computed, cached=cached, failed=failed)
+                continue
+            pbar.set_postfix(set=card["set_code"], computed=computed, cached=cached, failed=failed)
+            kp_array, descs = compute_sift_features(card["image_path"])
+            if kp_array is None:
+                failed += 1
+                continue
+            np.savez_compressed(str(out_path), keypoints=kp_array, descriptors=descs,
+                                card_id=np.array([card["card_id"]]),
+                                illustration_id=np.array([card["illustration_id"]]))
+            computed += 1
 
     print(f"Done. Computed: {computed}  Cached: {cached}  Failed: {failed}")
     print(f"Cache: {cache_root}")
