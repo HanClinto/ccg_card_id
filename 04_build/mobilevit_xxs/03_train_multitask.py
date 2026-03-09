@@ -120,7 +120,9 @@ class MultiTaskEmbeddingNet(nn.Module):
     """Shared backbone with per-task projection layers.
 
     separate_heads=False  →  one projection shared across tasks (single embedding).
+                             All embedding_dims must be equal; only the first is used.
     separate_heads=True   →  one projection per task (independent embeddings).
+                             Each task may have a different embedding_dim.
 
     forward() always returns a list of normalised embeddings, one per task.
     In shared mode the list contains the same tensor repeated.
@@ -129,22 +131,35 @@ class MultiTaskEmbeddingNet(nn.Module):
     def __init__(
         self,
         backbone_name: str,
-        embedding_dim: int,
+        embedding_dims: list[int],
         n_tasks: int,
         separate_heads: bool = False,
         pretrained: bool = True,
     ):
         super().__init__()
+        if len(embedding_dims) == 1:
+            embedding_dims = embedding_dims * n_tasks
+        if len(embedding_dims) != n_tasks:
+            raise ValueError(
+                f"embedding_dims must have 1 value or {n_tasks} values, got {len(embedding_dims)}"
+            )
+        if not separate_heads and len(set(embedding_dims)) > 1:
+            raise ValueError(
+                "Shared projection (--separate-heads not set) requires all embedding dims to be equal. "
+                f"Got {embedding_dims}. Use --separate-heads for per-task dims."
+            )
+
         self.backbone, feat_dim = build_backbone(backbone_name, pretrained=pretrained)
         self.separate_heads = separate_heads
         self.n_tasks = n_tasks
+        self.embedding_dims = embedding_dims
 
         if separate_heads:
             self.projs = nn.ModuleList(
-                [nn.Linear(feat_dim, embedding_dim) for _ in range(n_tasks)]
+                [nn.Linear(feat_dim, dim) for dim in embedding_dims]
             )
         else:
-            self.proj = nn.Linear(feat_dim, embedding_dim)
+            self.proj = nn.Linear(feat_dim, embedding_dims[0])
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
         f = self.backbone(x)
@@ -305,9 +320,19 @@ def run(args: argparse.Namespace) -> None:
 
     device = pick_device(args.cpu)
     n_tasks = len(label_fields)
+
+    # Resolve per-task embedding dims: broadcast single value, or use one per task
+    embedding_dims: list[int] = args.embedding_dims
+    if len(embedding_dims) == 1:
+        embedding_dims = embedding_dims * n_tasks
+    if len(embedding_dims) != n_tasks:
+        raise ValueError(
+            f"--embedding-dims must have 1 value or {n_tasks} values, got {len(embedding_dims)}"
+        )
+
     model = MultiTaskEmbeddingNet(
         args.backbone,
-        embedding_dim=args.embedding_dim,
+        embedding_dims=embedding_dims,
         n_tasks=n_tasks,
         separate_heads=args.separate_heads,
         pretrained=not args.no_pretrained,
@@ -316,7 +341,7 @@ def run(args: argparse.Namespace) -> None:
     criterions = [
         ArcFaceLoss(
             num_classes=len(all_labels_per_task[i]),
-            embedding_dim=args.embedding_dim,
+            embedding_dim=embedding_dims[i],
             margin=args.arcface_margin,
             scale=args.arcface_scale,
         ).to(device)
@@ -332,9 +357,10 @@ def run(args: argparse.Namespace) -> None:
 
     mode_tag = "sep" if args.separate_heads else "shared"
     fields_tag = "+".join(label_fields)
+    dims_tag = "+".join(f"{d}d" for d in embedding_dims)
     run_dir = (
         args.output_dir
-        / f"{args.backbone}_multitask_{fields_tag}_{mode_tag}_{args.embedding_dim}d"
+        / f"{args.backbone}_multitask_{fields_tag}_{mode_tag}_{dims_tag}"
     )
     run_dir.mkdir(parents=True, exist_ok=True)
     history_path = run_dir / "train_history.json"
@@ -435,6 +461,7 @@ def run(args: argparse.Namespace) -> None:
             "args": vars(args),
             "label_fields": label_fields,
             "labels_per_task": all_labels_per_task,
+            "embedding_dims": embedding_dims,
             "separate_heads": args.separate_heads,
         }
         torch.save(ckpt, run_dir / "last.pt")
@@ -474,7 +501,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--output-dir", type=Path, default=data_dir / "results" / "mobilevit_xxs")
     p.add_argument("--backbone", default="mobilevit_xxs",
                    choices=["mobilevit_xxs", "tinyvit", "resnet50"])
-    p.add_argument("--embedding-dim", type=int, default=128, choices=[128, 256, 384, 512])
+    p.add_argument(
+        "--embedding-dims", nargs="+", type=int, default=[128],
+        help="Embedding dim(s). One value = same for all tasks. "
+             "Multiple values (--separate-heads only) = one per task. "
+             "E.g. --embedding-dims 128 64  gives 128-d for task 0, 64-d for task 1.",
+    )
     p.add_argument("--epochs", type=int, default=15)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--lr", type=float, default=3e-4)
