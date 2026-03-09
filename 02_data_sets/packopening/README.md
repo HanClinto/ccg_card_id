@@ -172,47 +172,66 @@ datasets/packopening/
 
 Run from the project root. All scripts accept `--help`.
 
+Scripts are split into three stages:
+
 ```
 02_data_sets/packopening/code/
-  00_fetch_channel.py     Scan a YouTube channel, populate Sheet Tab 1 with new videos
-  01_download.py          Download a video (or all pending) with yt-dlp
-  02_extract_frames.py    Extract clean I-frames; filter by blur score
-  03_precompute_sift.py   Pre-compute SIFT features for all cards in a set (cached)
-  04_match_frames.py      Run SIFT homography; keep 4-corner matches; write to DB
-  05_build_manifest.py    Export manifest.csv + corners.csv from DB for training
+  db.py                   Shared SQLite helpers (schema, open_db, upsert_video, …)
+
+  # Stage 1 — Registry (no API key needed)
+  01_fetch_channel.py     Enumerate all videos on a YouTube channel → SQLite (yt-dlp)
+
+  # Stage 2 — Annotation (requires ANTHROPIC_API_KEY + credits)
+  02_annotate.py          Classify video titles with Claude: is it MTG? which sets?
+                          Writes set_codes + status back to SQLite.
+
+  # Stage 3 — Per-video ingestion (CPU-intensive; run after annotation)
+  pipeline/
+    01_download.py        Download a video (or all pending) with yt-dlp
+    02_extract_frames.py  Extract clean I-frames; filter by blur score
+    03_precompute_sift.py Pre-compute SIFT features for all cards in a set (cached)
+    04_match_frames.py    Run SIFT homography; keep 4-corner matches; write to DB
+    05_build_manifest.py  Export manifest.csv + corners.csv from DB for training
 ```
 
-### Typical single-video workflow
+### Typical workflow
 
 ```bash
 source .venv312/bin/activate
 
-# 1. Add the video to the Sheet manually (or via 00_fetch_channel.py)
+# 1. Fetch the full video list for OpenBoosters (no API key needed)
+python 02_data_sets/packopening/code/01_fetch_channel.py
+# → adds ~2000 videos to SQLite with status 'pending', empty set_codes
 
-# 2. Download
-python 02_data_sets/packopening/code/01_download.py --slug openboosters_alpha_2024
+# 2. Annotate with Claude (needs ANTHROPIC_API_KEY in .env)
+python 02_data_sets/packopening/code/02_annotate.py
+# → fills in set_codes; marks confidently non-MTG videos as 'skip'
+# → low-confidence results get status 'needs_review' for manual checking
 
-# 3. Extract frames
-python 02_data_sets/packopening/code/02_extract_frames.py --slug openboosters_alpha_2024
+# 3. Download one video to test the pipeline
+python 02_data_sets/packopening/code/pipeline/01_download.py --slug <slug>
 
-# 4. Pre-compute SIFT for the set (only needed once per set, then cached)
-python 02_data_sets/packopening/code/03_precompute_sift.py --set-code lea
+# 4. Extract frames
+python 02_data_sets/packopening/code/pipeline/02_extract_frames.py --slug <slug>
 
-# 5. Match frames to cards
-python 02_data_sets/packopening/code/04_match_frames.py --slug openboosters_alpha_2024
+# 5. Pre-compute SIFT for the set (once per set, then cached)
+python 02_data_sets/packopening/code/pipeline/03_precompute_sift.py --set-code lea
 
-# 6. Rebuild training manifest
-python 02_data_sets/packopening/code/05_build_manifest.py
+# 6. Match frames to cards
+python 02_data_sets/packopening/code/pipeline/04_match_frames.py --slug <slug>
+
+# 7. Rebuild training manifest
+python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
 ```
 
 ### Batch processing all pending videos
 
 ```bash
-python 02_data_sets/packopening/code/01_download.py --all
-python 02_data_sets/packopening/code/02_extract_frames.py --all
+python 02_data_sets/packopening/code/pipeline/01_download.py --all
+python 02_data_sets/packopening/code/pipeline/02_extract_frames.py --all
 # (SIFT precompute per set as needed)
-python 02_data_sets/packopening/code/04_match_frames.py --all
-python 02_data_sets/packopening/code/05_build_manifest.py
+python 02_data_sets/packopening/code/pipeline/04_match_frames.py --all
+python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
 ```
 
 All scripts support resuming interrupted runs. Re-running a completed step is

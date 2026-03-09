@@ -6,17 +6,10 @@ to datasets/packopening/raw/{slug}/, and updates status to 'downloading' then
 'downloaded' (or 'error' on failure).
 
 Usage (run from project root):
-    # Download one video by slug
-    python 02_data_sets/packopening/code/01_download.py --slug dQw4w9WgXcQ_lea_alpha-booster
-
-    # Download one video by YouTube ID
-    python 02_data_sets/packopening/code/01_download.py --video-id dQw4w9WgXcQ
-
-    # Download all videos with status 'pending'
-    python 02_data_sets/packopening/code/01_download.py --all
-
-    # Re-download even if already present
-    python 02_data_sets/packopening/code/01_download.py --slug ... --force
+    python 02_data_sets/packopening/code/pipeline/01_download.py --slug dQw4w9WgXcQ_lea_alpha-booster
+    python 02_data_sets/packopening/code/pipeline/01_download.py --video-id dQw4w9WgXcQ
+    python 02_data_sets/packopening/code/pipeline/01_download.py --all
+    python 02_data_sets/packopening/code/pipeline/01_download.py --slug ... --force
 
 Requires:
     pip install yt-dlp
@@ -28,10 +21,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
+CODE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(CODE_DIR))
+
 from ccg_card_id.config import cfg
-from db import open_db, set_video_status, get_video, get_videos_by_status
+from db import open_db, set_video_status, get_videos_by_status
 
 
 def download_video(video: dict, raw_dir: Path, force: bool = False) -> Path:
@@ -45,7 +41,6 @@ def download_video(video: dict, raw_dir: Path, force: bool = False) -> Path:
         print(f"  already downloaded: {mp4_path.name}")
         return mp4_path
 
-    url = video["url"]
     cmd = [
         "yt-dlp",
         "--format", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
@@ -53,15 +48,14 @@ def download_video(video: dict, raw_dir: Path, force: bool = False) -> Path:
         "--write-info-json",
         "--no-playlist",
         "--output", str(out_dir / f"{slug}.%(ext)s"),
-        url,
+        video["url"],
     ]
-    print(f"  downloading: {url}")
+    print(f"  downloading: {video['url']}")
     print(f"  → {out_dir}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed with exit code {result.returncode}")
+        raise RuntimeError(f"yt-dlp exited with code {result.returncode}")
 
-    # yt-dlp may produce .mp4 or .mkv depending on merge
     for ext in ("mp4", "mkv", "webm"):
         candidate = out_dir / f"{slug}.{ext}"
         if candidate.exists():
@@ -75,7 +69,7 @@ def download_video(video: dict, raw_dir: Path, force: bool = False) -> Path:
 def main() -> None:
     p = argparse.ArgumentParser(description="Download packopening YouTube videos")
     group = p.add_mutually_exclusive_group(required=True)
-    group.add_argument("--slug", help="Video slug (e.g. dQw4w9WgXcQ_lea_alpha-booster)")
+    group.add_argument("--slug", help="Video slug")
     group.add_argument("--video-id", help="YouTube video ID")
     group.add_argument("--all", action="store_true", help="Download all videos with status 'pending'")
     p.add_argument("--force", action="store_true", help="Re-download even if file already exists")
@@ -86,23 +80,22 @@ def main() -> None:
     raw_dir = args.data_dir / "datasets" / "packopening" / "raw"
     con = open_db(db_path)
 
-    # Resolve which videos to process
     if args.all:
         videos = get_videos_by_status(con, "pending")
         if not videos:
-            print("No videos with status 'pending' found.")
+            print("No videos with status 'pending'.")
             return
         print(f"Downloading {len(videos)} pending video(s)...")
     elif args.slug:
         v = con.execute("SELECT * FROM videos WHERE slug=?", (args.slug,)).fetchone()
         if not v:
-            print(f"ERROR: No video with slug '{args.slug}' in DB.", file=sys.stderr)
+            print(f"ERROR: No video with slug '{args.slug}'.", file=sys.stderr)
             sys.exit(1)
         videos = [v]
-    else:  # --video-id
+    else:
         v = con.execute("SELECT * FROM videos WHERE video_id=?", (args.video_id,)).fetchone()
         if not v:
-            print(f"ERROR: No video with video_id '{args.video_id}' in DB.", file=sys.stderr)
+            print(f"ERROR: No video with video_id '{args.video_id}'.", file=sys.stderr)
             sys.exit(1)
         videos = [v]
 
@@ -120,9 +113,9 @@ def main() -> None:
             print(f"  ERROR: {e}", file=sys.stderr)
             failed += 1
 
-    print(f"\nDownloaded {ok} video(s). Failures: {failed}.")
+    print(f"\nDownloaded {ok}. Failures: {failed}.")
     if ok:
-        print("Next: python 02_data_sets/packopening/code/02_extract_frames.py --all")
+        print("Next: python 02_data_sets/packopening/code/pipeline/02_extract_frames.py --all")
 
 
 if __name__ == "__main__":
