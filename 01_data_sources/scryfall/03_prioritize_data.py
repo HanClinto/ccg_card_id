@@ -5,17 +5,22 @@
 
 
 import os
+import sys
 import requests
 # import orjson
 import json
 from datetime import datetime
 import datetime as dt
+from pathlib import Path
 from tqdm import tqdm
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from ccg_card_id.config import cfg
+
 image_quality = "png"
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
-BULK_DATA_PATH = os.path.join(CACHE_DIR, "all_cards.json")
-IMAGES_DIR = os.path.join(CACHE_DIR, "images", image_quality)
+BULK_DATA_PATH = str(cfg.data_dir / "all_cards.json")
+IMAGES_DIR = str(cfg.scryfall_images_dir)
 
 english_only = True
 

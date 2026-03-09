@@ -84,11 +84,17 @@ Content-Type: application/json; charset=utf-8
 # If updated_at date is newer than the modified date on our local cache file OR local cache file does not exist, then download the newest version of the file and return TRUE
 
 import os
+import sys
 import requests
 
 import json
 from datetime import datetime
 import datetime as dt
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from ccg_card_id.config import cfg
 
 def sync_scryfall_bulkdata(bulkdata_types=["default_cards", "all_cards"]):
     """
@@ -96,7 +102,6 @@ def sync_scryfall_bulkdata(bulkdata_types=["default_cards", "all_cards"]):
     Returns True if any file was updated, else False.
     """
     API_URL = "https://api.scryfall.com/bulk-data"
-    CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
     updated_any = False
 
     # Get bulk data metadata from Scryfall
@@ -113,7 +118,7 @@ def sync_scryfall_bulkdata(bulkdata_types=["default_cards", "all_cards"]):
       remote_updated_at = bulk_entry["updated_at"]
       remote_updated_dt = datetime.fromisoformat(remote_updated_at.replace("Z", "+00:00"))
       download_url = bulk_entry["download_uri"]
-      cache_path = os.path.join(CACHE_DIR, f"{bulkdata_type}.json")
+      cache_path = str(cfg.data_dir / f"{bulkdata_type}.json")
 
       print(f"[{bulkdata_type}] Remote data updated at: {remote_updated_dt.isoformat()}")
 
