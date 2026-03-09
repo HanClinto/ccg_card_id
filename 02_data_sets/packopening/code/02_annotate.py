@@ -42,6 +42,15 @@ sys.path.insert(0, str(CODE_DIR))
 from ccg_card_id.config import cfg
 from db import open_db
 
+
+def load_valid_set_codes(data_dir: Path) -> set[str]:
+    """Return all Scryfall set codes present in default_cards.json."""
+    path = data_dir / "default_cards.json"
+    if not path.exists():
+        return set()
+    cards = json.loads(path.read_text(encoding="utf-8"))
+    return {c["set"].lower() for c in cards if "set" in c}
+
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
@@ -223,6 +232,10 @@ def main() -> None:
     classify_fn, backend_name = build_client()
     print(f"LLM backend: {backend_name}")
 
+    print("Loading valid Scryfall set codes...", end=" ", flush=True)
+    valid_set_codes = load_valid_set_codes(args.data_dir)
+    print(f"{len(valid_set_codes)} sets")
+
     db_path = args.data_dir / "datasets" / "packopening" / "packopening.db"
     con = open_db(db_path)
 
@@ -261,6 +274,15 @@ def main() -> None:
             set_codes_list = cls.get("set_codes", [])
             confidence = cls.get("confidence", "low")
             notes = cls.get("notes", "")
+
+            # Validate set codes against Scryfall — flag hallucinated codes
+            if valid_set_codes and set_codes_list:
+                bad = [c for c in set_codes_list if c not in valid_set_codes]
+                if bad:
+                    notes = (notes + f" | bad_codes:{','.join(bad)}").strip(" |")
+                    set_codes_list = [c for c in set_codes_list if c in valid_set_codes]
+                    if not set_codes_list:
+                        confidence = "low"  # all codes were invalid
 
             if confidence == "error":
                 new_status = "needs_review"
