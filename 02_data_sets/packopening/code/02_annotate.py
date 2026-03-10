@@ -40,16 +40,22 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(CODE_DIR))
 
 from ccg_card_id.config import cfg
+from ccg_card_id.catalog import catalog
 from db import open_db
 
 
-def load_valid_set_codes(data_dir: Path) -> set[str]:
-    """Return all Scryfall set codes present in default_cards.json."""
-    path = data_dir / "default_cards.json"
-    if not path.exists():
-        return set()
-    cards = json.loads(path.read_text(encoding="utf-8"))
-    return {c["set"].lower() for c in cards if "set" in c}
+def load_valid_set_codes() -> set[str]:
+    """Return all Scryfall set codes present in the card catalog DB."""
+    try:
+        return catalog.valid_set_codes()
+    except FileNotFoundError:
+        # Fall back to JSON if DB hasn't been built yet
+        path = cfg.scryfall_all_cards if cfg.scryfall_all_cards.exists() else cfg.scryfall_default_cards
+        if not path.exists():
+            return set()
+        import json
+        cards = json.loads(path.read_text(encoding="utf-8"))
+        return {c["set"].lower() for c in cards if "set" in c}
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -66,6 +72,13 @@ For each title return these fields:
                            "what's in a box" explanations, commentary, vlogs
   set_codes   — Scryfall set codes (lowercase) for sets being opened, e.g. ["lea"] or ["otj","otp","big"]
                 Leave [] if not an opening or if you can't determine the set.
+  lang        — Scryfall language code if the video is explicitly for a non-English printing.
+                Use Scryfall codes: "it" Italian, "fr" French, "de" German, "ja" Japanese,
+                "pt" Portuguese, "es" Spanish, "ru" Russian, "ko" Korean,
+                "zhs" Simplified Chinese, "zht" Traditional Chinese.
+                FBB (Foreign Black Border) cards are early sets printed in foreign languages —
+                identify the specific language (e.g. Italian FBB → "it").
+                Leave "" if English or unknown.
   confidence  — "high" / "medium" / "low" (your confidence in set_codes)
   notes       — short freeform note (optional)
 
@@ -76,7 +89,7 @@ Rules for set_codes:
 - If multiple sets in one video, list all
 
 Respond ONLY with a JSON array (same length as input), each element:
-  {"is_mtg": bool, "is_opening": bool, "set_codes": [str], "confidence": str, "notes": str}
+  {"is_mtg": bool, "is_opening": bool, "set_codes": [str], "lang": str, "confidence": str, "notes": str}
 """
 
 
@@ -233,7 +246,7 @@ def main() -> None:
     print(f"LLM backend: {backend_name}")
 
     print("Loading valid Scryfall set codes...", end=" ", flush=True)
-    valid_set_codes = load_valid_set_codes(args.data_dir)
+    valid_set_codes = load_valid_set_codes()
     print(f"{len(valid_set_codes)} sets")
 
     db_path = args.data_dir / "datasets" / "packopening" / "packopening.db"
@@ -272,6 +285,7 @@ def main() -> None:
             is_mtg = cls.get("is_mtg")
             is_opening = cls.get("is_opening", False)
             set_codes_list = cls.get("set_codes", [])
+            lang = cls.get("lang", "").strip().lower()
             confidence = cls.get("confidence", "low")
             notes = cls.get("notes", "")
 
@@ -314,11 +328,12 @@ def main() -> None:
 
             if args.dry_run:
                 marker = "SKIP" if new_status == "skip" else set_codes_str or "(no set)"
-                print(f"    {row['video_id']}  {marker:<25}  {row['title'][:55]}")
+                lang_tag = f" [{lang}]" if lang and lang != "en" else ""
+                print(f"    {row['video_id']}  {marker:<25}{lang_tag:<6}  {row['title'][:55]}")
             else:
                 con.execute(
-                    "UPDATE videos SET set_codes=?, status=?, notes=? WHERE video_id=?",
-                    (set_codes_str, new_status, annotation_note, row["video_id"]),
+                    "UPDATE videos SET set_codes=?, lang=?, status=?, notes=? WHERE video_id=?",
+                    (set_codes_str, lang, new_status, annotation_note, row["video_id"]),
                 )
         if not args.dry_run:
             con.commit()

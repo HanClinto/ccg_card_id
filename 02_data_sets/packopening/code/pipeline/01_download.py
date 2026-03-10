@@ -73,6 +73,8 @@ def main() -> None:
     group.add_argument("--video-id", help="YouTube video ID")
     group.add_argument("--all", action="store_true", help="Download all videos with status 'pending'")
     p.add_argument("--force", action="store_true", help="Re-download even if file already exists")
+    p.add_argument("--first-n", type=int, default=0,
+                   help="Only download the first N pending videos (0 = no limit, only with --all)")
     p.add_argument("--data-dir", type=Path, default=cfg.data_dir)
     args = p.parse_args()
 
@@ -85,6 +87,8 @@ def main() -> None:
         if not videos:
             print("No videos with status 'pending'.")
             return
+        if args.first_n > 0:
+            videos = videos[: args.first_n]
         print(f"Downloading {len(videos)} pending video(s)...")
     elif args.slug:
         v = con.execute("SELECT * FROM videos WHERE slug=?", (args.slug,)).fetchone()
@@ -115,7 +119,7 @@ def main() -> None:
 
     print(f"\nDownloaded {ok}. Failures: {failed}.")
     if ok:
-        print("Next: python 02_data_sets/packopening/code/pipeline/02_extract_frames.py --all")
+        print("Next: python 02_data_sets/packopening/code/pipeline/03_extract_frames.py --all")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS videos (
     channel         TEXT,
     title           TEXT,
     set_codes       TEXT,
+    lang            TEXT DEFAULT '',
     status          TEXT DEFAULT 'pending',
     added_date      TEXT,
     processed_date  TEXT,
@@ -47,11 +48,22 @@ CREATE INDEX IF NOT EXISTS idx_frames_video ON frames(video_id);
 """
 
 
+_MIGRATIONS = [
+    "ALTER TABLE videos ADD COLUMN lang TEXT DEFAULT ''",
+    "ALTER TABLE videos ADD COLUMN densified INTEGER DEFAULT 0",
+]
+
+
 def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(DDL)
+    for sql in _MIGRATIONS:
+        try:
+            con.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     con.commit()
     return con
 
