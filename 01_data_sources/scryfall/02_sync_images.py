@@ -11,7 +11,9 @@
 # For a single-faced card, then image_uris is directly on the card object
 # For a multi-faced card, then image_uris is on each face object within the object's card_faces array
 
+import argparse
 import os
+import re
 import sys
 import requests
 # import orjson
@@ -25,12 +27,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from ccg_card_id.config import cfg
 
-image_types = ["png", "large", "normal", "small", "art_crop", "border_crop"]
 image_quality = "png"
 
-english_only = True
-
-BULK_DATA_PATH = str(cfg.data_dir / "default_cards.json")
+#BULK_DATA_PATH = str(cfg.data_dir / "default_cards.json")
+BULK_DATA_PATH = str(cfg.data_dir / "all_cards.json")
 IMAGES_DIR = str(cfg.scryfall_images_dir)
 
 def load_bulk_data():
@@ -72,14 +72,16 @@ def prioritize_cards(bulk_data):
 
     return scryfall_cards_by_oracle_id, scryfall_cards_by_illustration_id
 
-def sync_scryfall_images(cards):
+def sync_scryfall_images(cards, lang_filter: str | None = None, set_filter: set | None = None,
+                         first_n: int = 0):
     """
     Syncs Scryfall card images based on the local all_cards.json bulk data file.
     Downloads images that are missing or outdated.
+    first_n: if > 0, stop after downloading this many images (skipped/cached don't count).
     """
     then = datetime.now()
     print(f"Syncing images for {len(cards)} cards...")
-    
+
     # Display progress using tqdm
     with tqdm(cards, desc="Syncing images", unit="card") as pbar:
         for card in pbar:
@@ -91,8 +93,10 @@ def sync_scryfall_images(cards):
             # If the card's image_status is "missing" or "placeholder", skip downloading images
             if card.get("image_status") in ["missing", "placeholder"]:
                 continue
-            if english_only and card.get("lang") != "en":
-                continue  # Skip non-English cards
+            if lang_filter and card.get("lang") != lang_filter:
+                continue
+            if set_filter and card.get("set", "").lower() not in set_filter:
+                continue
             for face in faces:
                 image_uris = face.get("image_uris", {})
                 image_url = image_uris.get(image_quality)
@@ -143,35 +147,34 @@ def sync_scryfall_images(cards):
                         if remote_dt:
                             mtime = remote_dt.timestamp()
                             os.utime(local_image_path, (mtime, mtime))
+                        if first_n > 0:
+                            first_n -= 1
+                            if first_n == 0:
+                                pbar.write(f"Reached --first-n limit, stopping.")
+                                return
                     except Exception as e:
                         pbar.write(f"Error downloading image for card {card_id} from {image_url}: {e}")
 
 if __name__ == "__main__":
+    p = argparse.ArgumentParser(description="Sync Scryfall card images")
+    p.add_argument("--lang", default="en",
+                   help="Language code to sync (default: en). Use 'all' for all languages.")
+    p.add_argument("--set-code", dest="set_codes",
+                   help="Comma/space-separated set codes to limit download (default: all sets)")
+    p.add_argument("--first-n", type=int, default=0, metavar="N",
+                   help="Stop after downloading N new images (0 = no limit)")
+    args = p.parse_args()
+
+    lang_filter = None if args.lang == "all" else args.lang
+    set_filter = None
+    if args.set_codes:
+        set_filter = {s.lower() for s in re.split(r"[\s,]+", args.set_codes.strip()) if s}
+
+    if lang_filter:
+        print(f"Language filter: {lang_filter}")
+    if set_filter:
+        print(f"Set filter: {sorted(set_filter)}")
+
     bulk_data = load_bulk_data()
-
-    sync_scryfall_images(bulk_data)
-    raise SystemExit("Image sync complete.")
-
-    scryfall_cards_by_oracle_id, scryfall_cards_by_illustration_id = prioritize_cards(bulk_data)
-
-    # Sort oracle_ids by number of associated cards (descending)
-    sorted_oracle_ids = sorted(scryfall_cards_by_oracle_id.items(), key=lambda x: len(x[1]), reverse=True)
-    # Sort illustration_ids by number of associated cards (descending)
-    sorted_illustration_ids = sorted(scryfall_cards_by_illustration_id.items(), key=lambda x: len(x[1]), reverse=True)
-
-    print(f"{len(sorted_oracle_ids)} unique oracle_ids and {len(sorted_illustration_ids)} unique illustration_ids found.")
-    
-    top_n = 1000
-    print(f"Syncing images for top {top_n} illustration_ids...")
-    top_illustration_cards = []
-    for illustration_id, cards in sorted_illustration_ids[:top_n]:
-        top_illustration_cards.extend(cards)
-
-    print(f' (Total: {len(top_illustration_cards)} cards)')
-
-    # Dump top cards to a JSON file for reference
-    TOP_CARDS_PATH = os.path.join(CACHE_DIR, f"by_illustration_top_{top_n}.json")
-    with open(TOP_CARDS_PATH, "w", encoding="utf-8") as f:
-        json.dump(top_illustration_cards, f, ensure_ascii=False, indent=2)
-
-    sync_scryfall_images(top_illustration_cards)
+    sync_scryfall_images(bulk_data, lang_filter=lang_filter, set_filter=set_filter,
+                         first_n=args.first_n)
