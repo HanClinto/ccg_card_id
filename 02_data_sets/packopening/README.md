@@ -188,8 +188,8 @@ Scripts are split into three stages:
   # Stage 3 — Per-video ingestion (CPU-intensive; run after annotation)
   pipeline/
     01_download.py        Download a video (or all pending) with yt-dlp
-    02_extract_frames.py  Extract clean I-frames; filter by blur score
-    03_precompute_sift.py Pre-compute SIFT features for all cards in a set (cached)
+    03_extract_frames.py  Extract clean I-frames; filter by blur score
+    02_precompute_sift.py Pre-compute SIFT features for all cards in a set (cached)
     04_match_frames.py    Run SIFT homography; keep 4-corner matches; write to DB
     05_build_manifest.py  Export manifest.csv + corners.csv from DB for training
 ```
@@ -212,10 +212,10 @@ python 02_data_sets/packopening/code/02_annotate.py
 python 02_data_sets/packopening/code/pipeline/01_download.py --slug <slug>
 
 # 4. Extract frames
-python 02_data_sets/packopening/code/pipeline/02_extract_frames.py --slug <slug>
+python 02_data_sets/packopening/code/pipeline/03_extract_frames.py --slug <slug>
 
 # 5. Pre-compute SIFT for the set (once per set, then cached)
-python 02_data_sets/packopening/code/pipeline/03_precompute_sift.py --set-code lea
+python 02_data_sets/packopening/code/pipeline/02_precompute_sift.py --set-code lea
 
 # 6. Match frames to cards
 python 02_data_sets/packopening/code/pipeline/04_match_frames.py --slug <slug>
@@ -228,7 +228,7 @@ python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
 
 ```bash
 python 02_data_sets/packopening/code/pipeline/01_download.py --all
-python 02_data_sets/packopening/code/pipeline/02_extract_frames.py --all
+python 02_data_sets/packopening/code/pipeline/03_extract_frames.py --all
 # (SIFT precompute per set as needed)
 python 02_data_sets/packopening/code/pipeline/04_match_frames.py --all
 python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
