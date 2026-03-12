@@ -30,7 +30,7 @@ from ccg_card_id.config import cfg
 from db import open_db, set_video_status, get_videos_by_status
 
 
-def download_video(video: dict, raw_dir: Path, force: bool = False) -> Path:
+def download_video(video: dict, raw_dir: Path, force: bool = False, browser: str = "safari") -> Path:
     """Download video to raw_dir/{slug}/.  Returns path to downloaded .mp4."""
     slug = video["slug"]
     out_dir = raw_dir / slug
@@ -47,6 +47,7 @@ def download_video(video: dict, raw_dir: Path, force: bool = False) -> Path:
         "--merge-output-format", "mp4",
         "--write-info-json",
         "--no-playlist",
+        "--cookies-from-browser", browser,
         "--output", str(out_dir / f"{slug}.%(ext)s"),
         video["url"],
     ]
@@ -73,8 +74,13 @@ def main() -> None:
     group.add_argument("--video-id", help="YouTube video ID")
     group.add_argument("--all", action="store_true", help="Download all videos with status 'pending'")
     p.add_argument("--force", action="store_true", help="Re-download even if file already exists")
+    p.add_argument("--channel",
+                   help="Only process videos from this channel (use with --all), e.g. '@MTGUnpacked'")
     p.add_argument("--first-n", type=int, default=0,
                    help="Only download the first N pending videos (0 = no limit, only with --all)")
+    p.add_argument("--browser", default="safari",
+                   help="Browser to pull cookies from (default: safari). Options: chrome, firefox, safari, edge, etc."
+                        " Note: safari requires Full Disk Access for Terminal in System Settings → Privacy & Security.")
     p.add_argument("--data-dir", type=Path, default=cfg.data_dir)
     args = p.parse_args()
 
@@ -83,13 +89,25 @@ def main() -> None:
     con = open_db(db_path)
 
     if args.all:
-        videos = get_videos_by_status(con, "pending")
+        if args.channel:
+            videos = con.execute(
+                "SELECT * FROM videos WHERE status IN ('pending', 'downloading') AND channel=? ORDER BY added_date",
+                (args.channel,),
+            ).fetchall()
+            print(f"Filtering to channel: {args.channel}")
+        else:
+            videos = con.execute(
+                "SELECT * FROM videos WHERE status IN ('pending', 'downloading') ORDER BY added_date"
+            ).fetchall()
         if not videos:
-            print("No videos with status 'pending'.")
+            print("No videos with status 'pending' or 'downloading'.")
             return
         if args.first_n > 0:
             videos = videos[: args.first_n]
-        print(f"Downloading {len(videos)} pending video(s)...")
+        n_retry = sum(1 for v in videos if v["status"] == "downloading")
+        if n_retry:
+            print(f"  ({n_retry} interrupted download(s) will be retried)")
+        print(f"Downloading {len(videos)} video(s)...")
     elif args.slug:
         v = con.execute("SELECT * FROM videos WHERE slug=?", (args.slug,)).fetchone()
         if not v:
@@ -108,13 +126,13 @@ def main() -> None:
         print(f"\n[{video['video_id']}] {video['title'][:70]}")
         set_video_status(con, video["video_id"], "downloading")
         try:
-            mp4_path = download_video(dict(video), raw_dir, force=args.force)
+            mp4_path = download_video(dict(video), raw_dir, force=args.force, browser=args.browser)
             set_video_status(con, video["video_id"], "downloaded")
             print(f"  OK: {mp4_path}")
             ok += 1
         except Exception as e:
-            set_video_status(con, video["video_id"], "error")
             print(f"  ERROR: {e}", file=sys.stderr)
+            print(f"  status left as 'pending' — will retry on next --all run", file=sys.stderr)
             failed += 1
 
     print(f"\nDownloaded {ok}. Failures: {failed}.")

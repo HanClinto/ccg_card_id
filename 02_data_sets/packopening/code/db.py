@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS frames (
     corner3_x REAL, corner3_y REAL,
     matching_area_pct REAL,
     blur_score      REAL,
+    phash_dist      INTEGER,
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
@@ -51,13 +52,16 @@ CREATE INDEX IF NOT EXISTS idx_frames_video ON frames(video_id);
 _MIGRATIONS = [
     "ALTER TABLE videos ADD COLUMN lang TEXT DEFAULT ''",
     "ALTER TABLE videos ADD COLUMN densified INTEGER DEFAULT 0",
+    "ALTER TABLE frames ADD COLUMN phash_dist INTEGER",
+    "ALTER TABLE frames ADD COLUMN human_review TEXT",
 ]
 
 
 def open_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
     con.executescript(DDL)
     for sql in _MIGRATIONS:
         try:
@@ -91,6 +95,45 @@ def get_video(con: sqlite3.Connection, slug: str) -> sqlite3.Row | None:
 
 def get_videos_by_status(con: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     return con.execute("SELECT * FROM videos WHERE status=?", (status,)).fetchall()
+
+
+def claim_next_video(
+    con: sqlite3.Connection,
+    from_status: str,
+    to_status: str = "processing",
+    channel: str | None = None,
+) -> sqlite3.Row | None:
+    """Atomically claim the next video with from_status, setting it to to_status.
+
+    Safe to call concurrently from multiple worker processes.  SQLite's write
+    serialisation ensures only one worker claims each video: the UPDATE uses
+    ``AND status=from_status`` so a row that was just claimed by another worker
+    will match 0 rows and the caller retries automatically.
+
+    If channel is given, only videos whose channel column matches are considered.
+
+    Returns the claimed row (with its original field values), or None when the
+    queue is empty.
+    """
+    if channel:
+        select_sql = "SELECT * FROM videos WHERE status=? AND channel=? ORDER BY rowid LIMIT 1"
+        select_params: tuple = (from_status, channel)
+    else:
+        select_sql = "SELECT * FROM videos WHERE status=? ORDER BY rowid LIMIT 1"
+        select_params = (from_status,)
+
+    while True:
+        row = con.execute(select_sql, select_params).fetchone()
+        if row is None:
+            return None
+        cur = con.execute(
+            "UPDATE videos SET status=? WHERE video_id=? AND status=?",
+            (to_status, row["video_id"], from_status),
+        )
+        con.commit()
+        if cur.rowcount == 1:
+            return row
+        # Another worker claimed it between our SELECT and UPDATE — retry.
 
 
 def frames_for_video(con: sqlite3.Connection, video_id: str) -> list[sqlite3.Row]:
