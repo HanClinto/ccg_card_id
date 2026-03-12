@@ -1,5 +1,10 @@
 # CCG Card ID — Project Guide
 
+## Working conventions
+
+- **Commit and push frequently** — after completing any meaningful unit of work (a feature, a fix, a refactor), stage the relevant files, commit with a descriptive message, and `git push`. Do not wait to be asked.
+- Never commit `.venv312/`, data files, or model checkpoints — these are excluded by `.gitignore`.
+
 ## Goal
 
 Build a system that identifies Magic: The Gathering cards from real-world images
