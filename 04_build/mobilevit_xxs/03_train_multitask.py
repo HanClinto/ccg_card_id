@@ -425,9 +425,15 @@ def run(args: argparse.Namespace) -> None:
             per_task = [criterions[i](z_list[i], ys[i]) for i in range(n_tasks)]
             loss = sum(task_weights[i] * per_task[i] for i in range(n_tasks))
 
+            if not loss.isfinite():
+                optim.zero_grad(set_to_none=True)
+                if scheduler is not None:
+                    scheduler.step()
+                continue
+
             optim.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(params, max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(params, max_norm=1.0)
             optim.step()
             if scheduler is not None:
                 scheduler.step()
