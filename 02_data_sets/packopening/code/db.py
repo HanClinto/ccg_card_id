@@ -1,8 +1,10 @@
 """SQLite helpers for the packopening pipeline.
 
 Schema:
-  videos   — one row per YouTube video (mirrors Google Sheet Tab 1)
-  frames   — one row per good matched frame
+  videos         — one row per YouTube video (mirrors Google Sheet Tab 1)
+  frames         — one row per good matched frame (main SIFT pass)
+  list_frames    — second-pass matches: List / Special Guest cards found in frames
+  list_pass_log  — tracks which videos have been through the List second pass
 """
 from __future__ import annotations
 
@@ -46,6 +48,38 @@ CREATE TABLE IF NOT EXISTS frames (
 
 CREATE INDEX IF NOT EXISTS idx_frames_card  ON frames(card_id);
 CREATE INDEX IF NOT EXISTS idx_frames_video ON frames(video_id);
+
+CREATE TABLE IF NOT EXISTS list_frames (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    video_id        TEXT REFERENCES videos(video_id),
+    frame_path      TEXT NOT NULL,
+    aligned_path    TEXT,
+    card_id         TEXT NOT NULL,
+    illustration_id TEXT,
+    set_code        TEXT,
+    host_set_code   TEXT,
+    num_matches     INTEGER,
+    corner0_x REAL, corner0_y REAL,
+    corner1_x REAL, corner1_y REAL,
+    corner2_x REAL, corner2_y REAL,
+    corner3_x REAL, corner3_y REAL,
+    matching_area_pct REAL,
+    blur_score      REAL,
+    phash_dist      INTEGER,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_list_frames_card  ON list_frames(card_id);
+CREATE INDEX IF NOT EXISTS idx_list_frames_video ON list_frames(video_id);
+
+CREATE TABLE IF NOT EXISTS list_pass_log (
+    video_id          TEXT PRIMARY KEY REFERENCES videos(video_id),
+    status            TEXT DEFAULT 'pending',
+    n_eligible_cards  INTEGER DEFAULT 0,
+    n_frames_checked  INTEGER DEFAULT 0,
+    n_new_matches     INTEGER DEFAULT 0,
+    run_at            TEXT
+);
 """
 
 
@@ -116,10 +150,10 @@ def claim_next_video(
     queue is empty.
     """
     if channel:
-        select_sql = "SELECT * FROM videos WHERE status=? AND channel=? ORDER BY rowid LIMIT 1"
+        select_sql = "SELECT * FROM videos WHERE status=? AND channel=? ORDER BY rowid DESC LIMIT 1"
         select_params: tuple = (from_status, channel)
     else:
-        select_sql = "SELECT * FROM videos WHERE status=? ORDER BY rowid LIMIT 1"
+        select_sql = "SELECT * FROM videos WHERE status=? ORDER BY rowid DESC LIMIT 1"
         select_params = (from_status,)
 
     while True:
