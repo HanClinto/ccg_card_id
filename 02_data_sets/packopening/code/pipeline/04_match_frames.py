@@ -562,7 +562,7 @@ def process_video(
     _catalog_db = _catalog_base / "catalog" / "scryfall" / "cards.db"
     if _catalog_db.exists():
         _ccon = sqlite3.connect(str(_catalog_db))
-        for _row in _ccon.execute("SELECT id, illustration_id FROM cards WHERE lang='en'"):
+        for _row in _ccon.execute("SELECT id, illustration_id FROM cards"):
             if _row[1]:
                 card_id_to_illust[_row[0].lower()] = _row[1].lower()
         _ccon.close()
