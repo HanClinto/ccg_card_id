@@ -9,10 +9,10 @@ Usage:
   # Evaluate CannyPolyDetector on val split (default)
   python 03_detector/eval/benchmark.py
 
-  # Evaluate both Canny and neural
+  # Evaluate both Canny and TinyCornerCNN
   python 03_detector/eval/benchmark.py \\
-      --detectors canny,neural \\
-      --neural-checkpoint /path/to/corner_detector/last.pt
+      --detectors canny,tinycornercnn \\
+      --neural-checkpoint /path/to/corner_detector_tiny/last.pt
 
   # Evaluate all data (not just val split)
   python 03_detector/eval/benchmark.py --split all
@@ -40,7 +40,7 @@ sys.path.insert(0, str(DETECTOR_DIR))
 from ccg_card_id.config import cfg  # noqa: E402
 from base import CardDetector, DetectionResult  # noqa: E402
 from detectors import CannyPolyDetector  # noqa: E402
-from detectors.neural.dataset import load_dataset  # noqa: E402
+from detectors.tiny_corner_cnn.dataset import load_dataset  # noqa: E402
 from eval.metrics import corner_point_error, pck, quad_iou_exact  # noqa: E402
 
 
@@ -211,26 +211,25 @@ def run(args: argparse.Namespace) -> None:
     for det_name in requested:
         if det_name == "canny":
             detectors.append(CannyPolyDetector())
-        elif det_name == "neural":
+        elif det_name == "tinycornercnn":
             if args.neural_checkpoint is None:
-                print("WARNING: --neural-checkpoint not provided; skipping neural detector.")
+                print("WARNING: --neural-checkpoint not provided; skipping TinyCornerCNN.")
                 continue
             if not args.neural_checkpoint.exists():
-                print(f"WARNING: neural checkpoint not found: {args.neural_checkpoint}; skipping.")
+                print(f"WARNING: checkpoint not found: {args.neural_checkpoint}; skipping.")
                 continue
-            # Import here so neural deps are only needed when requested
-            _neural_dir = Path(__file__).resolve().parents[1] / "detectors" / "neural"
-            sys.path.insert(0, str(_neural_dir))
+            _tcc_dir = Path(__file__).resolve().parents[1] / "detectors" / "tiny_corner_cnn"
+            sys.path.insert(0, str(_tcc_dir))
             from predict import NeuralCornerDetectorInference  # noqa: E402
             device = "mps" if _mps_available() else ("cuda" if _cuda_available() else "cpu")
             detectors.append(
                 NeuralCornerDetectorInference(args.neural_checkpoint, device=device)
             )
         else:
-            print(f"WARNING: unknown detector '{det_name}' — skipping. Valid: canny, neural")
+            print(f"WARNING: unknown detector '{det_name}' — skipping. Valid: canny, tinycornercnn")
 
     if not detectors:
-        print("No detectors to evaluate. Use --detectors canny or --detectors canny,neural")
+        print("No detectors to evaluate. Use --detectors canny or --detectors canny,tinycornercnn")
         return
 
     # Evaluate
@@ -289,11 +288,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--detectors", type=str, default="canny",
-        help="Comma-separated list of detectors to evaluate: canny, neural (default: canny)",
+        help="Comma-separated list of detectors to evaluate: canny, tinycornercnn (default: canny)",
     )
     p.add_argument(
         "--neural-checkpoint", type=Path, default=None,
-        help="Path to trained neural detector checkpoint (required for --detectors neural)",
+        help="Path to trained TinyCornerCNN checkpoint (required for --detectors tinycornercnn)",
     )
     p.add_argument(
         "--limit", type=int, default=None,

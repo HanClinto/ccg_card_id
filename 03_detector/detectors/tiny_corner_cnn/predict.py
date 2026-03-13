@@ -50,7 +50,7 @@ class NeuralCornerDetectorInference(CardDetector):
     alongside the classical detectors.
 
     Args:
-        checkpoint_path:    Path to a checkpoint saved by neural/train.py.
+        checkpoint_path:    Path to a checkpoint saved by tiny_corner_cnn/train.py.
         device:             "cpu", "cuda", "mps", or a torch.device.
         presence_threshold: Sigmoid threshold for card_present=True (default 0.5).
     """

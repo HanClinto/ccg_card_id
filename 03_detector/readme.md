@@ -254,10 +254,10 @@ source .venv312/bin/activate
 # Evaluate CannyPolyDetector on the val split (default)
 python 03_detector/eval/benchmark.py
 
-# Evaluate both Canny and a trained neural detector
+# Evaluate both Canny and TinyCornerCNN
 python 03_detector/eval/benchmark.py \
-    --detectors canny,neural \
-    --neural-checkpoint /path/to/corner_detector/last.pt
+    --detectors canny,tinycornercnn \
+    --neural-checkpoint /path/to/corner_detector_tiny/last.pt
 
 # Evaluate on all data (not just val split)
 python 03_detector/eval/benchmark.py --split all
@@ -291,7 +291,7 @@ NeuralCornerDetector | 0.018  | 93.7%   | 0.94   | 97.2%     |  3.1%
     __init__.py                 Exports CannyPolyDetector, SIFTHomographyDetector
     canny_poly.py               Classical Canny + polygon detector
     sift_homography.py          SIFT feature-matching wrapper
-    neural/
+    tiny_corner_cnn/
       __init__.py               Package marker
       model.py                  NeuralCornerDetector (MobileViT-XXS + regression head)
       dataset.py                CornerDataset + load_dataset

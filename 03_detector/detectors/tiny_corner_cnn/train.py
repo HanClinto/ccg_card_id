@@ -15,17 +15,17 @@ Training sources
 
 Usage:
   # Train on packopening (default), seed backbone from card-ID checkpoint
-  python 03_detector/detectors/neural/train.py \\
+  python 03_detector/detectors/tiny_corner_cnn/train.py \\
       --seed-checkpoint $DATA/results/mobilevit_xxs/mobilevit_xxs_illustration_id_128d/last.pt
 
   # Ablation: train on clint only
-  python 03_detector/detectors/neural/train.py --train-source clint
+  python 03_detector/detectors/tiny_corner_cnn/train.py --train-source clint
 
   # Resume from last.pt
-  python 03_detector/detectors/neural/train.py --epochs 10
+  python 03_detector/detectors/tiny_corner_cnn/train.py --epochs 10
 
   # Start from scratch
-  python 03_detector/detectors/neural/train.py --rebuild
+  python 03_detector/detectors/tiny_corner_cnn/train.py --rebuild
 
 Checkpoints: <results-dir>/epoch_XXXX.pt  and  last.pt
 Format: {"model": state_dict, "optimizer": state_dict, "epoch": N, "val_loss": v}
