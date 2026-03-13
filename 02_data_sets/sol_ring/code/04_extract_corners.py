@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""Re-extract corner coordinates for all clint_cards_with_backgrounds frames.
+"""Extract corner coordinates for all sol_ring good frames.
 
-The original pipeline (02_find_homography.py) ran successfully and wrote the
-aligned/ images, but its data store (pickledb) never flushed, leaving
-dataset.tsv empty and homography.json truncated.
-
-This script re-runs homography matching against the cached Scryfall reference
-images in 03_reference/ and writes per-frame corner data to corners.csv.
-
-Fixes over the original script:
-  - Full UUID extraction via regex (not split('_')[0] which only gets the first
-    segment of a hyphenated UUID)
-  - Keyed per frame, not per card, so all frames are recorded
-  - Numpy values converted to Python floats before serialisation
+Runs SIFT homography matching against the Scryfall catalog reference PNG for
+each frame, and writes corner data to corners.csv.  Output format matches
+clint_cards_with_backgrounds/corners.csv so both datasets can be evaluated
+with the same benchmark harness.
 
 Usage (run from project root):
-    python 02_data_sets/clint_cards_with_backgrounds/code/03_extract_corners.py
+    python 02_data_sets/sol_ring/code/04_extract_corners.py
 """
 from __future__ import annotations
 
@@ -26,7 +18,6 @@ import sys
 from pathlib import Path
 
 import cv2 as cv
-import numpy as np
 
 _CLINTUTILS_PARENT = Path(__file__).resolve().parents[4]  # parent of ClintUtils sibling repo
 sys.path.insert(0, str(_CLINTUTILS_PARENT))
@@ -36,11 +27,11 @@ import ClintUtils.align_img as align_img
 
 UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
-DATA_ROOT   = cfg.data_dir / "datasets" / "clint_cards_with_backgrounds" / "data"
-GOOD_DIR    = DATA_ROOT / "04_data" / "good"
-REF_DIR     = DATA_ROOT / "03_reference"
-OUTPUT_CSV  = DATA_ROOT / "04_data" / "corners.csv"
-RESUME_JSON = DATA_ROOT / "04_data" / "corners_progress.json"
+SOLRING_DIR = cfg.data_dir / "datasets" / "solring"
+GOOD_DIR    = SOLRING_DIR / "04_data" / "good"
+CAT_ROOT    = cfg.data_dir / "catalog" / "scryfall" / "images" / "png" / "front"
+OUTPUT_CSV  = SOLRING_DIR / "04_data" / "corners.csv"
+RESUME_JSON = SOLRING_DIR / "04_data" / "corners_progress.json"
 
 FIELDNAMES = [
     "img_path", "card_id",
@@ -52,18 +43,15 @@ FIELDNAMES = [
 ]
 
 
-def _float(v) -> float:
-    """Convert numpy scalar or anything to a plain Python float."""
-    return float(v)
+def _ref_path(card_id: str) -> Path:
+    return CAT_ROOT / card_id[0] / card_id[1] / f"{card_id}.png"
 
 
 def _extract_corners(scene_corners, img_w: int, img_h: int) -> list[tuple[float, float]]:
-    """Return 4 (x, y) pairs normalised to [0, 1], ordered top-left first."""
+    """Return 4 (x, y) pairs normalised to [0, 1], TL first (min x+y sum)."""
     pts = [(float(scene_corners[i, 0, 0]), float(scene_corners[i, 0, 1])) for i in range(4)]
-    # Rotate so top-left corner (min x+y) is first
     idx = min(range(4), key=lambda i: pts[i][0] + pts[i][1])
     pts = pts[idx:] + pts[:idx]
-    # Normalise
     return [(x / img_w, y / img_h) for x, y in pts]
 
 
@@ -71,7 +59,6 @@ def main() -> None:
     frames = sorted(GOOD_DIR.glob("*.jpg"))
     print(f"Good frames: {len(frames)}")
 
-    # Load resume state
     done: dict[str, dict] = {}
     if RESUME_JSON.exists():
         done = json.loads(RESUME_JSON.read_text())
@@ -88,38 +75,39 @@ def main() -> None:
             continue
 
         card_id = m.group(0).lower()
-        ref_path = REF_DIR / f"{card_id}.png"
-        if not ref_path.exists():
+        ref = _ref_path(card_id)
+        if not ref.exists():
             print(f"  SKIP (no reference): {card_id}")
             continue
 
         img = cv.imread(str(frame_path))
-        ref = cv.imread(str(ref_path))
-        if img is None or ref is None:
+        ref_img = cv.imread(str(ref))
+        if img is None or ref_img is None:
             print(f"  SKIP (unreadable): {frame_path.name}")
             continue
 
         try:
-            result = align_img.align_images(img, ref)
+            result = align_img.align_images(img, ref_img)
         except Exception as e:
             print(f"  ERROR aligning {frame_path.name}: {e}")
             errors += 1
+            done[frame_path.name] = {"error": True}
             continue
 
         if result.get("error"):
-            print(f"  BAD match {frame_path.name}: {result.get('error_message', '')}")
+            print(f"  BAD {frame_path.name}: {result.get('error_message', '')}")
             errors += 1
+            done[frame_path.name] = {"error": True}
             continue
 
         img_h, img_w = img.shape[:2]
         corners = _extract_corners(result["scene_corners"], img_w, img_h)
 
-        # Bounding-box area fraction as a quality signal
         xs = [c[0] for c in corners]
         ys = [c[1] for c in corners]
-        bbox_pct = _float((max(xs) - min(xs)) * (max(ys) - min(ys)))
+        bbox_pct = float((max(xs) - min(xs)) * (max(ys) - min(ys)))
 
-        record = {
+        done[frame_path.name] = {
             "img_path": str(frame_path.relative_to(cfg.data_dir)),
             "card_id": card_id,
             "corner0_x": corners[0][0], "corner0_y": corners[0][1],
@@ -129,29 +117,14 @@ def main() -> None:
             "num_good_matches": int(result["num_good_matches"]),
             "matching_area_pct": bbox_pct,
         }
-        done[frame_path.name] = record
 
         if (i + 1) % 50 == 0:
             RESUME_JSON.write_text(json.dumps(done, indent=2))
-            print(f"  [{i+1}/{len(todo)}] saved checkpoint ({len(done)} total)")
+            print(f"  [{i+1}/{len(todo)}] checkpoint ({len(done)} total)")
 
-    # Final save
     RESUME_JSON.write_text(json.dumps(done, indent=2))
 
-    # Write CSV — normalise any legacy absolute img_path to relative
-    rows = []
-    for v in done.values():
-        if "corner0_x" not in v:
-            continue
-        row = dict(v)
-        p = Path(row["img_path"])
-        if p.is_absolute():
-            try:
-                row["img_path"] = str(p.relative_to(cfg.data_dir))
-            except ValueError:
-                pass  # leave as-is if it can't be relativised
-        rows.append(row)
-
+    rows = [v for v in done.values() if "corner0_x" in v]
     with OUTPUT_CSV.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
         writer.writeheader()

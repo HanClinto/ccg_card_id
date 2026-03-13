@@ -173,6 +173,7 @@ def load_from_clint_csv(
             )
             positives.append({
                 "img_path":     row["img_path"],
+                "card_id":      row.get("card_id"),
                 "card_present": True,
                 "corners":      corners,
             })
@@ -182,6 +183,7 @@ def load_from_clint_csv(
         for p in neg_dir.glob("*.jpg"):
             negatives.append({
                 "img_path":     str(p.relative_to(data_dir)),
+                "card_id":      None,
                 "card_present": False,
                 "corners":      None,
             })
@@ -194,6 +196,17 @@ def load_from_clint_csv(
         f"→ {len(all_rows) - n_val} train / {n_val} val"
     )
     return all_rows[n_val:], all_rows[:n_val]
+
+
+def load_dataset(
+    corners_csv: Path,
+    neg_dir: Path,
+    data_dir: Path,
+    val_frac: float = 0.15,
+    seed: int = 42,
+) -> tuple[list[dict], list[dict]]:
+    """Alias for load_from_clint_csv — convenience entry-point for the benchmark."""
+    return load_from_clint_csv(corners_csv, neg_dir, data_dir, val_frac=val_frac, seed=seed)
 
 
 def load_clint_as_test(
@@ -216,6 +229,7 @@ def load_clint_as_test(
             )
             rows.append({
                 "img_path":     row["img_path"],
+                "card_id":      row.get("card_id"),
                 "card_present": True,
                 "corners":      corners,
             })
@@ -223,6 +237,7 @@ def load_clint_as_test(
         for p in neg_dir.glob("*.jpg"):
             rows.append({
                 "img_path":     str(p.relative_to(data_dir)),
+                "card_id":      None,
                 "card_present": False,
                 "corners":      None,
             })

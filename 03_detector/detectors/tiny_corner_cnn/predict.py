@@ -21,14 +21,13 @@ import torch
 from torchvision import transforms
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT))
-
-_HERE = Path(__file__).resolve().parent
+_HERE        = Path(__file__).resolve().parent
+_DETECTOR_DIR = Path(__file__).resolve().parents[2]  # 03_detector/
 sys.path.insert(0, str(_HERE))
+sys.path.insert(0, str(_DETECTOR_DIR))
 
-from base import CardDetector, DetectionResult              # noqa: E402
-from model import TinyCornerCNN, MobileViTCornerDetector    # noqa: E402
+from base import CardDetector, DetectionResult
+from model import TinyCornerCNN, MobileViTCornerDetector
 
 _ARCH_MAP = {"tiny": TinyCornerCNN, "mobilevit": MobileViTCornerDetector}
 

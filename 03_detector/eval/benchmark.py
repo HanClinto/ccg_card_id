@@ -31,9 +31,6 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
-
 DETECTOR_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DETECTOR_DIR))
 
@@ -41,7 +38,9 @@ from ccg_card_id.config import cfg  # noqa: E402
 from base import CardDetector, DetectionResult  # noqa: E402
 from detectors import CannyPolyDetector  # noqa: E402
 from detectors.tiny_corner_cnn.dataset import load_dataset  # noqa: E402
-from eval.metrics import corner_point_error, pck, quad_iou_exact  # noqa: E402
+from eval.metrics import corner_point_error, pck, quad_iou_exact, phash_distance  # noqa: E402
+
+_PHASH_GOOD_THRESHOLD = 5  # Hamming distance ≤ 5 → close enough for real-world ID
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +53,7 @@ class FrameResult(NamedTuple):
     cpe: float | None        # None for negatives or false negatives
     pck_5: float | None
     iou: float | None
+    phash_dist: int | None   # Hamming distance between dewarped pred and ref; None if N/A
     img_w: int
     img_h: int
 
@@ -66,6 +66,7 @@ def evaluate_detector(
     detector: CardDetector,
     rows: list[dict],
     data_dir: Path,
+    catalog_root: Path,
     limit: int | None = None,
 ) -> list[FrameResult]:
     results: list[FrameResult] = []
@@ -94,8 +95,15 @@ def evaluate_detector(
             cpe_val   = corner_point_error(pred_corners, true_corners)
             pck_val   = pck(pred_corners, true_corners, threshold=0.05)
             iou_val   = quad_iou_exact(pred_corners, true_corners, w, h)
+            # pHash: dewarp predicted crop and compare against Scryfall reference
+            card_id   = row.get("card_id")
+            if card_id:
+                ref_path = catalog_root / card_id[0] / card_id[1] / f"{card_id}.png"
+                phash_val = phash_distance(img, pred_corners, ref_path)
+            else:
+                phash_val = None
         else:
-            cpe_val = pck_val = iou_val = None
+            cpe_val = pck_val = iou_val = phash_val = None
 
         results.append(FrameResult(
             true_present=true_present,
@@ -103,6 +111,7 @@ def evaluate_detector(
             cpe=cpe_val,
             pck_5=pck_val,
             iou=iou_val,
+            phash_dist=phash_val,
             img_w=w,
             img_h=h,
         ))
@@ -131,20 +140,28 @@ def aggregate(results: list[FrameResult]) -> dict:
     else:
         fpr = float("nan")
 
-    # CPE, PCK, IoU: mean over frames where both true and pred are positive
-    cpe_vals  = [r.cpe  for r in results if r.cpe  is not None]
-    pck_vals  = [r.pck_5 for r in results if r.pck_5 is not None]
-    iou_vals  = [r.iou  for r in results if r.iou  is not None]
+    # CPE, PCK, IoU, pHash: mean over frames where both true and pred are positive
+    cpe_vals   = [r.cpe       for r in results if r.cpe       is not None]
+    pck_vals   = [r.pck_5     for r in results if r.pck_5     is not None]
+    iou_vals   = [r.iou       for r in results if r.iou       is not None]
+    phash_vals = [r.phash_dist for r in results if r.phash_dist is not None]
+
+    phash_good_rate = (
+        float(sum(1 for d in phash_vals if d <= _PHASH_GOOD_THRESHOLD) / len(phash_vals))
+        if phash_vals else float("nan")
+    )
 
     return {
-        "n_total":    len(results),
-        "n_positive": len(positives),
-        "n_negative": len(negatives),
-        "cpe":        float(np.mean(cpe_vals))  if cpe_vals  else float("nan"),
-        "pck_5":      float(np.mean(pck_vals))  if pck_vals  else float("nan"),
-        "iou":        float(np.mean(iou_vals))  if iou_vals  else float("nan"),
-        "det_rate":   det_rate,
-        "fpr":        fpr,
+        "n_total":        len(results),
+        "n_positive":     len(positives),
+        "n_negative":     len(negatives),
+        "cpe":            float(np.mean(cpe_vals))   if cpe_vals   else float("nan"),
+        "pck_5":          float(np.mean(pck_vals))   if pck_vals   else float("nan"),
+        "iou":            float(np.mean(iou_vals))   if iou_vals   else float("nan"),
+        "phash_mean":     float(np.mean(phash_vals)) if phash_vals else float("nan"),
+        "phash_good_rate": phash_good_rate,
+        "det_rate":       det_rate,
+        "fpr":            fpr,
     }
 
 
@@ -158,19 +175,27 @@ def print_table(rows: list[tuple[str, dict]]) -> None:
     Args:
         rows: list of (detector_name, metrics_dict) pairs.
     """
-    header = f"{'Detector':<28} | {'CPE↓':>7} | {'PCK@5%↑':>8} | {'IoU↑':>6} | {'Det.Rate↑':>10} | {'FPR↓':>6}"
+    header = (
+        f"{'Detector':<28} | {'CPE↓':>7} | {'PCK@5%↑':>8} | {'IoU↑':>6} | "
+        f"{'pHash↓':>7} | {'ID-able↑':>9} | {'Det.Rate↑':>10} | {'FPR↓':>6}"
+    )
     sep = "-" * len(header)
     print()
     print(sep)
     print(header)
     print(sep)
     for name, m in rows:
-        cpe_s      = f"{m['cpe']:.4f}"      if not _isnan(m['cpe'])      else "  N/A "
-        pck_s      = f"{m['pck_5']*100:.1f}%"  if not _isnan(m['pck_5'])    else "  N/A "
-        iou_s      = f"{m['iou']:.4f}"      if not _isnan(m['iou'])      else "  N/A "
-        det_s      = f"{m['det_rate']*100:.1f}%"  if not _isnan(m['det_rate']) else "  N/A "
-        fpr_s      = f"{m['fpr']*100:.1f}%"  if not _isnan(m['fpr'])      else "  N/A "
-        print(f"{name:<28} | {cpe_s:>7} | {pck_s:>8} | {iou_s:>6} | {det_s:>10} | {fpr_s:>6}")
+        cpe_s    = f"{m['cpe']:.4f}"             if not _isnan(m['cpe'])             else "  N/A "
+        pck_s    = f"{m['pck_5']*100:.1f}%"      if not _isnan(m['pck_5'])           else "  N/A "
+        iou_s    = f"{m['iou']:.4f}"             if not _isnan(m['iou'])             else "  N/A "
+        ph_s     = f"{m['phash_mean']:.1f}"      if not _isnan(m['phash_mean'])      else "  N/A "
+        id_s     = f"{m['phash_good_rate']*100:.1f}%" if not _isnan(m['phash_good_rate']) else "  N/A "
+        det_s    = f"{m['det_rate']*100:.1f}%"   if not _isnan(m['det_rate'])        else "  N/A "
+        fpr_s    = f"{m['fpr']*100:.1f}%"        if not _isnan(m['fpr'])             else "  N/A "
+        print(
+            f"{name:<28} | {cpe_s:>7} | {pck_s:>8} | {iou_s:>6} | "
+            f"{ph_s:>7} | {id_s:>9} | {det_s:>10} | {fpr_s:>6}"
+        )
     print(sep)
     print()
 
@@ -188,9 +213,10 @@ def _isnan(v: float) -> bool:
 # ---------------------------------------------------------------------------
 
 def run(args: argparse.Namespace) -> None:
-    data_dir    = args.data_dir
-    corners_csv = args.corners_csv
-    neg_dir     = args.neg_dir
+    data_dir     = args.data_dir
+    corners_csv  = args.corners_csv
+    neg_dir      = args.neg_dir
+    catalog_root = data_dir / "catalog" / "scryfall" / "images" / "png" / "front"
 
     if not corners_csv.exists():
         raise FileNotFoundError(f"corners.csv not found: {corners_csv}")
@@ -235,7 +261,7 @@ def run(args: argparse.Namespace) -> None:
     # Evaluate
     table_rows = []
     for detector in detectors:
-        frame_results = evaluate_detector(detector, rows, data_dir, limit=args.limit)
+        frame_results = evaluate_detector(detector, rows, data_dir, catalog_root, limit=args.limit)
         metrics = aggregate(frame_results)
         table_rows.append((detector.name, metrics))
         print(
@@ -243,6 +269,8 @@ def run(args: argparse.Namespace) -> None:
             f"n={metrics['n_total']} "
             f"(+{metrics['n_positive']}/-{metrics['n_negative']}) "
             f"CPE={metrics['cpe']:.4f} "
+            f"pHash={metrics['phash_mean']:.1f} "
+            f"ID-able={metrics['phash_good_rate']*100:.1f}% "
             f"det_rate={metrics['det_rate']*100:.1f}%"
         )
 

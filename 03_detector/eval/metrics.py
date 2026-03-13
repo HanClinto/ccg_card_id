@@ -1,5 +1,81 @@
 """Evaluation metrics for card corner detection."""
+from __future__ import annotations
+
+from pathlib import Path
+
 import numpy as np
+
+# Standard Scryfall card dimensions used as dewarp target
+_REF_W = 745
+_REF_H = 1040
+
+
+def dewarp_card(image: np.ndarray, corners: np.ndarray) -> np.ndarray | None:
+    """Perspective-warp the detected card region to a flat _REF_W × _REF_H rectangle.
+
+    Args:
+        image:   HxWx3 uint8 BGR image.
+        corners: shape (4, 2), normalized [0, 1], order TL/TR/BR/BL.
+
+    Returns:
+        Dewarped uint8 BGR image of shape (_REF_H, _REF_W, 3), or None if warp fails.
+    """
+    import cv2
+    h, w = image.shape[:2]
+    src = (corners * np.array([w, h], dtype=np.float32)).astype(np.float32)
+    dst = np.array([
+        [0,       0      ],
+        [_REF_W,  0      ],
+        [_REF_W,  _REF_H ],
+        [0,       _REF_H ],
+    ], dtype=np.float32)
+    M = cv2.getPerspectiveTransform(src, dst)
+    return cv2.warpPerspective(image, M, (_REF_W, _REF_H))
+
+
+def phash_distance(
+    image: np.ndarray,
+    pred_corners: np.ndarray,
+    ref_img_path: Path,
+    hash_size: int = 8,
+) -> int | None:
+    """Compute pHash Hamming distance between dewarped prediction and Scryfall reference.
+
+    Dewarp the predicted card region and compare its perceptual hash against
+    the reference PNG's hash.  A low distance (< 5) means the detected crop
+    closely resembles the reference card — a strong signal that both detection
+    and identification would succeed.
+
+    Args:
+        image:         Original HxWx3 uint8 BGR image.
+        pred_corners:  shape (4, 2), normalized [0, 1], TL/TR/BR/BL.
+        ref_img_path:  Path to Scryfall reference PNG for this card.
+        hash_size:     pHash grid size (default 8 → 64-bit hash).
+
+    Returns:
+        Hamming distance in [0, 64], or None if the reference is missing or warp fails.
+    """
+    try:
+        import imagehash
+        from PIL import Image
+    except ImportError:
+        return None
+
+    if not ref_img_path.exists():
+        return None
+
+    dewarped = dewarp_card(image, pred_corners)
+    if dewarped is None:
+        return None
+
+    # OpenCV uses BGR; PIL uses RGB
+    import cv2
+    pred_pil = Image.fromarray(cv2.cvtColor(dewarped, cv2.COLOR_BGR2RGB))
+    ref_pil  = Image.open(ref_img_path).convert("RGB")
+
+    pred_hash = imagehash.phash(pred_pil, hash_size=hash_size)
+    ref_hash  = imagehash.phash(ref_pil,  hash_size=hash_size)
+    return int(pred_hash - ref_hash)
 
 
 def corner_point_error(pred: np.ndarray, true: np.ndarray) -> float:

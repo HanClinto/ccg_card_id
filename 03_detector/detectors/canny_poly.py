@@ -24,10 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
-
-from base import CardDetector, DetectionResult  # noqa: E402  (local import after sys.path)
+from base import CardDetector, DetectionResult
 
 
 def _order_corners(pts: np.ndarray) -> np.ndarray:

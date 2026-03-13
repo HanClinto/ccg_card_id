@@ -41,10 +41,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-ROOT = Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT))
-
-from ccg_card_id.config import cfg  # noqa: E402
+from ccg_card_id.config import cfg
 
 # Local imports (relative to this file's directory)
 _HERE = Path(__file__).resolve().parent
