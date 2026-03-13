@@ -1,15 +1,22 @@
-# Sync Scryfall card images
-# Given a bulk data JSON from Scryfall exists in ./cache/all_cards.json
-# Download images for all cards listed in that file into ./cache/images/png/front/{card_id}[0]/{card_id}[1]/{card_id}.jpg
-# Cards in the bulk data JSON have an "image_uris" field with URLs for various image types and sizes
-# Examples:
-#  https://cards.scryfall.io/png/front/0/2/02d6d693-f1f3-4317-bcc0-c21fa8490d38.png?1651492800
-#  https://cards.scryfall.io/png/back/0/2/02d6d693-f1f3-4317-bcc0-c21fa8490d38.png?1651492800
-# Note that the image URL includes a timestamp query parameter, which should be compared against the local file mtime to determine if the image needs to be re-downloaded
-# If the local image file does not exist, or if the timestamp in the URL is newer than the local file mtime, download the image and save it to the appropriate path
-# If a card has multiple faces, then download images for every face and save in the appropriate locations
-# For a single-faced card, then image_uris is directly on the card object
-# For a multi-faced card, then image_uris is on each face object within the object's card_faces array
+#!/usr/bin/env python3
+"""Sync Scryfall card images (step 3 of 3 in the Scryfall update pipeline).
+
+Downloads PNG images for all cards in the catalog DB into:
+  catalog/scryfall/images/png/front/{a}/{b}/{uuid}.png
+  catalog/scryfall/images/png/back/{a}/{b}/{uuid}.png  (DFCs only)
+
+Image URLs from Scryfall include a timestamp query parameter; the local file
+mtime is compared against this timestamp to skip already-current images.
+
+Run after syncing bulk data and rebuilding the card DB:
+  python 01_data_sources/scryfall/01_sync_data.py
+  python 01_data_sources/scryfall/02_build_card_db.py
+  python 01_data_sources/scryfall/03_sync_images.py
+
+Usage (run from project root):
+    python 01_data_sources/scryfall/03_sync_images.py
+    python 01_data_sources/scryfall/03_sync_images.py --sets lea leb 2ed
+"""
 
 import argparse
 import os

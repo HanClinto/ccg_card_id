@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS cards (
     collector_number     TEXT,
     rarity               TEXT,
     back_illustration_id TEXT,
-    back_image_uri_png   TEXT
+    back_image_uri_png   TEXT,
+    is_default           INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_cards_set_lang      ON cards(set_code, lang);
