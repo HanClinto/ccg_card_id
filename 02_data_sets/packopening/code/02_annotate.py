@@ -46,16 +46,7 @@ from db import open_db
 
 def load_valid_set_codes() -> set[str]:
     """Return all Scryfall set codes present in the card catalog DB."""
-    try:
-        return catalog.valid_set_codes()
-    except FileNotFoundError:
-        # Fall back to JSON if DB hasn't been built yet
-        path = cfg.scryfall_all_cards if cfg.scryfall_all_cards.exists() else cfg.scryfall_default_cards
-        if not path.exists():
-            return set()
-        import json
-        cards = json.loads(path.read_text(encoding="utf-8"))
-        return {c["set"].lower() for c in cards if "set" in c}
+    return catalog.valid_set_codes()
 
 # ---------------------------------------------------------------------------
 # Prompt

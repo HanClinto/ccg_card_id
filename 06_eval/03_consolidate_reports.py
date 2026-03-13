@@ -28,6 +28,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ccg_card_id.config import cfg
+from ccg_card_id.catalog import catalog
 
 
 DEFAULT_RESULTS_ROOT = cfg.data_dir / "results" / "eval"
@@ -81,24 +82,18 @@ def _front_image_for_id(card_id: str) -> Path | None:
 
 
 def _load_card_index() -> dict[str, dict[str, str]]:
-    out: dict[str, dict[str, str]] = {}
-    src = cfg.scryfall_default_cards
-    if not src.exists():
-        return out
     try:
-        cards = json.loads(src.read_text(encoding="utf-8"))
-    except Exception:
-        return out
-    for c in cards:
-        cid = str(c.get("id", "")).lower()
-        if not cid:
-            continue
-        out[cid] = {
-            "name": str(c.get("name", "")),
-            "set": str(c.get("set", "")).upper(),
-            "set_name": str(c.get("set_name", "")),
+        set_names = catalog.set_names()
+        return {
+            c["id"].lower(): {
+                "name": c["name"],
+                "set": c["set_code"].upper(),
+                "set_name": set_names.get(c["set_code"], ""),
+            }
+            for c in catalog.all_cards()
         }
-    return out
+    except Exception:
+        return {}
 
 
 def _parse_input_label(image_key: str, card_index: dict[str, dict[str, str]]) -> str:

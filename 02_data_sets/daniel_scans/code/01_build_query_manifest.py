@@ -2,7 +2,7 @@
 """Build a query manifest CSV for the daniel_scans dataset.
 
 Reads the processed images directory and cross-references each card_id against
-all_cards.json to populate illustration_id.
+the Scryfall catalog DB to populate illustration_id.
 
 Filename format (images_processed/):
   {cardname}_{setcode}_{sleevetype}_{card_id_uuid}_{seq}[_foil].jpg
@@ -10,7 +10,7 @@ Filename format (images_processed/):
 
 Input:
   <data_dir>/datasets/daniel_scans/images_processed/   (150 jpg files)
-  <data_dir>/all_cards.json
+  catalog DB (built by 01_data_sources/scryfall/04_build_card_db.py)
 
 Output:
   <data_dir>/datasets/daniel_scans/query_manifest.csv
@@ -94,7 +94,7 @@ def main() -> None:
     if missing_uuid:
         print(f"  WARNING: {missing_uuid} files had no UUID in filename")
     if missing_card:
-        print(f"  WARNING: {missing_card} card_ids not found in all_cards.json")
+        print(f"  WARNING: {missing_card} card_ids not found in catalog")
 
 
 if __name__ == "__main__":

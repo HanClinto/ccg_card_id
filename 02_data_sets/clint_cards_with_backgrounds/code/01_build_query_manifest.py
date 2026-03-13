@@ -2,7 +2,7 @@
 """Build a query manifest CSV for the clint_cards_with_backgrounds dataset.
 
 Reads the aligned homography-corrected frames and cross-references each card_id
-against all_cards.json to populate illustration_id.
+against the Scryfall catalog DB to populate illustration_id.
 
 Filename format (04_data/aligned/):
   {card_id_uuid}_{CardName}_{date}.mp4-{frame}.jpg
@@ -10,7 +10,7 @@ Filename format (04_data/aligned/):
 
 Input:
   <data_dir>/datasets/clint_cards_with_backgrounds/data/04_data/aligned/  (1270 jpg files)
-  <data_dir>/all_cards.json
+  catalog DB (built by 01_data_sources/scryfall/04_build_card_db.py)
 
 Output:
   <data_dir>/datasets/clint_cards_with_backgrounds/query_manifest.csv
@@ -98,7 +98,7 @@ def main() -> None:
     if missing_uuid:
         print(f"  WARNING: {missing_uuid} files had no UUID in filename")
     if missing_card:
-        print(f"  WARNING: {missing_card} card_ids not found in all_cards.json")
+        print(f"  WARNING: {missing_card} card_ids not found in catalog")
 
 
 if __name__ == "__main__":
