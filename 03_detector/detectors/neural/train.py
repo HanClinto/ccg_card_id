@@ -50,7 +50,7 @@ from ccg_card_id.config import cfg  # noqa: E402
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from model import NeuralCornerDetector   # noqa: E402
+from model import TinyCornerCNN, MobileViTCornerDetector   # noqa: E402
 from dataset import (  # noqa: E402
     CornerDataset,
     load_from_packopening_db,
@@ -134,7 +134,7 @@ def pick_device(cpu: bool = False) -> torch.device:
 
 def run(args: argparse.Namespace) -> None:
     data_dir    = args.data_dir
-    results_dir = args.results_dir
+    results_dir = args.results_dir or (data_dir / f"results/corner_detector_{args.arch}")
 
     print(f"data_dir     : {data_dir}")
     print(f"train_source : {args.train_source}")
@@ -180,13 +180,21 @@ def run(args: argparse.Namespace) -> None:
 
     device = pick_device(args.cpu)
     print(f"device      : {device}")
+    print(f"arch        : {args.arch}")
 
-    model = NeuralCornerDetector(pretrained_backbone=True).to(device)
-
-    # Seed backbone from card-ID checkpoint before optimizer setup
-    if args.seed_checkpoint is not None:
-        print(f"seeding backbone from {args.seed_checkpoint}")
-        model.load_card_id_checkpoint(args.seed_checkpoint)
+    if args.arch == "tiny":
+        model = TinyCornerCNN().to(device)
+        params = sum(p.numel() for p in model.parameters())
+        print(f"  {params:,} parameters ({params*4/1024:.0f} KB fp32)")
+        if args.seed_checkpoint is not None:
+            print("WARNING: --seed-checkpoint ignored for tiny arch (no compatible backbone)")
+    else:
+        model = MobileViTCornerDetector(pretrained_backbone=True).to(device)
+        params = sum(p.numel() for p in model.parameters())
+        print(f"  {params:,} parameters ({params*4/1024**2:.1f} MB fp32)")
+        if args.seed_checkpoint is not None:
+            print(f"seeding backbone from {args.seed_checkpoint}")
+            model.load_card_id_checkpoint(args.seed_checkpoint)
 
     optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 
@@ -313,6 +321,7 @@ def run(args: argparse.Namespace) -> None:
 
         ckpt = {
             "epoch": epoch,
+            "arch": args.arch,
             "model": model.state_dict(),
             "optimizer": optim.state_dict(),
             "val_loss": val_loss,
@@ -364,9 +373,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory of clint hard-negative frames",
     )
     p.add_argument(
-        "--results-dir", type=Path,
-        default=_data_dir / "results/corner_detector",
-        help="Directory for checkpoints",
+        "--arch", choices=["tiny", "mobilevit"], default="tiny",
+        help="Model architecture. 'tiny' (default): TinyCornerCNN, 46K params, "
+             "edge-deployable. 'mobilevit': MobileViT-XXS backbone, 951K params, "
+             "accuracy ceiling / ablation.",
+    )
+    p.add_argument(
+        "--results-dir", type=Path, default=None,
+        help="Directory for checkpoints (default: results/corner_detector_{arch})",
     )
     p.add_argument(
         "--seed-checkpoint", type=Path, default=None,

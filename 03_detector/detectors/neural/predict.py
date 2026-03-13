@@ -27,8 +27,10 @@ sys.path.insert(0, str(ROOT))
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from base import CardDetector, DetectionResult  # noqa: E402
-from model import NeuralCornerDetector          # noqa: E402
+from base import CardDetector, DetectionResult              # noqa: E402
+from model import TinyCornerCNN, MobileViTCornerDetector    # noqa: E402
+
+_ARCH_MAP = {"tiny": TinyCornerCNN, "mobilevit": MobileViTCornerDetector}
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD  = [0.229, 0.224, 0.225]
@@ -56,6 +58,7 @@ class NeuralCornerDetectorInference(CardDetector):
     def __init__(
         self,
         checkpoint_path: Path | str,
+        arch: str = "tiny",
         device: str | torch.device = "cpu",
         presence_threshold: float = 0.5,
     ) -> None:
@@ -63,12 +66,18 @@ class NeuralCornerDetectorInference(CardDetector):
         self.device = torch.device(device)
         self.presence_threshold = presence_threshold
 
-        self.model = NeuralCornerDetector(pretrained_backbone=False)
         ckpt = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
+        # Arch can be stored in checkpoint or passed explicitly
+        arch = ckpt.get("arch", arch)
+        model_cls = _ARCH_MAP.get(arch)
+        if model_cls is None:
+            raise ValueError(f"Unknown arch '{arch}'. Choose from: {list(_ARCH_MAP)}")
+        self.model = model_cls()
         self.model.load_state_dict(ckpt["model"])
         self.model.to(self.device)
         self.model.eval()
 
+        self._arch  = arch
         self._epoch = ckpt.get("epoch", "?")
 
     def detect(self, image: np.ndarray, gallery=None) -> DetectionResult:
