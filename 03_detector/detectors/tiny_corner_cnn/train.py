@@ -130,8 +130,14 @@ def pick_device(cpu: bool = False) -> torch.device:
 # ---------------------------------------------------------------------------
 
 def run(args: argparse.Namespace) -> None:
-    data_dir    = args.data_dir
-    results_dir = args.results_dir or (data_dir / f"results/corner_detector_{args.arch}")
+    data_dir      = args.data_dir
+    fast_data_dir = args.fast_data_dir
+    results_dir   = args.results_dir or (data_dir / f"results/corner_detector_{args.arch}")
+
+    if fast_data_dir is not None:
+        print(f"fast_data_dir: {fast_data_dir}  (cache)")
+    else:
+        print("fast_data_dir: (none — loading from data_dir)")
 
     print(f"data_dir     : {data_dir}")
     print(f"train_source : {args.train_source}")
@@ -160,8 +166,8 @@ def run(args: argparse.Namespace) -> None:
         train_rows, val_rows = load_from_clint_csv(clint_csv, clint_neg, data_dir)
         test_rows = []
 
-    train_ds = CornerDataset(train_rows, data_dir, augment=True)
-    val_ds   = CornerDataset(val_rows,   data_dir, augment=False)
+    train_ds = CornerDataset(train_rows, data_dir, augment=True,  fast_data_dir=fast_data_dir)
+    val_ds   = CornerDataset(val_rows,   data_dir, augment=False, fast_data_dir=fast_data_dir)
     test_ds  = CornerDataset(test_rows,  data_dir, augment=False) if test_rows else None
 
     train_dl = DataLoader(
@@ -343,6 +349,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--data-dir", type=Path, default=_data_dir,
         help="Root data directory (default: from cfg)",
+    )
+    p.add_argument(
+        "--fast-data-dir", type=Path, default=cfg.fast_data_dir if cfg.fast_data_dir.exists() else None,
+        help="Fast local cache directory for pre-resized images (default: cfg.fast_data_dir if it exists)",
     )
     p.add_argument(
         "--train-source", choices=["packopening", "clint"], default="packopening",

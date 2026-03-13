@@ -251,16 +251,30 @@ def load_clint_as_test(
 class CornerDataset(Dataset):
     """PyTorch Dataset for corner regression + card-presence detection."""
 
-    def __init__(self, rows: list[dict], data_dir: Path, augment: bool = False) -> None:
-        self.rows     = rows
-        self.data_dir = data_dir
-        self.augment  = augment
+    def __init__(
+        self,
+        rows: list[dict],
+        data_dir: Path,
+        augment: bool = False,
+        fast_data_dir: Path | None = None,
+    ) -> None:
+        self.rows          = rows
+        self.data_dir      = data_dir
+        self.fast_data_dir = fast_data_dir
+        self.augment       = augment
 
-        self._normalize = transforms.Compose([
-            transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
-            transforms.ToTensor(),
-            transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
-        ])
+        # If cached images are already 224×224, skip the Resize step
+        if fast_data_dir is not None:
+            self._normalize = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
+            ])
+        else:
+            self._normalize = transforms.Compose([
+                transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
+            ])
         self._color_jitter = transforms.Compose([
             transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.1),
             transforms.RandomGrayscale(p=0.05),
@@ -272,7 +286,13 @@ class CornerDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         row = self.rows[idx]
-        img_path = self.data_dir / row["img_path"]
+        rel = row["img_path"]
+        # Use fast cache if available, fall back to original
+        if self.fast_data_dir is not None:
+            cached = self.fast_data_dir / rel
+            img_path = cached if cached.exists() else self.data_dir / rel
+        else:
+            img_path = self.data_dir / rel
         img = Image.open(img_path).convert("RGB")
 
         corners = row["corners"].copy() if row["corners"] is not None else None
