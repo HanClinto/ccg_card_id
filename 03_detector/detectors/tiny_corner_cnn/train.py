@@ -151,6 +151,7 @@ def run(args: argparse.Namespace) -> None:
             db_path, data_dir,
             neg_sample_n=args.neg_sample_n,
             val_frac=0.05,
+            max_phash_dist=args.max_phash_dist,
         )
         # Always evaluate on clint as the held-out test domain
         test_rows = load_clint_as_test(clint_csv, clint_neg, data_dir) if clint_csv.exists() else []
@@ -360,6 +361,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--neg-sample-n", type=int, default=10_000,
         help="Number of negative frames to sample from unmatched packopening videos (default: 10000)",
+    )
+    p.add_argument(
+        "--max-phash-dist", type=int, default=20,
+        help="Exclude packopening frames with pHash distance > this threshold (default: 20). "
+             "Filters ~11%% of frames where SIFT may have matched the wrong card.",
     )
     p.add_argument(
         "--clint-corners-csv", type=Path,

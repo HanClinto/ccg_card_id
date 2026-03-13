@@ -58,15 +58,26 @@ def load_from_packopening_db(
     neg_sample_n: int = 10_000,
     val_frac: float = 0.05,
     seed: int = 42,
+    max_phash_dist: int = 20,
 ) -> tuple[list[dict], list[dict]]:
     """Load SIFT-verified frames from the packopening DB.
 
-    Positive examples: every row in the `frames` table (corner coords already
-    stored, normalized [0, 1]).
+    Positive examples: rows in the `frames` table filtered by pHash distance.
+    pHash distance is the Hamming distance between the dewarped frame's pHash
+    and the Scryfall reference image pHash — a low value confirms the SIFT
+    homography matched the right card and the corners are trustworthy.
 
-    Negative examples: random frames sampled from videos whose status is
-    'frames_extracted' (frame extraction succeeded but no SIFT match was
-    found — most of these frames show no prominently-positioned card).
+    Distribution (380k total):
+      0–5:  11%  near-perfect      16–20: 21%  acceptable
+      6–10: 34%  good              21–30: 10%  suspect
+      11–15: 23% decent            31+:  0.6%  likely spurious
+
+    Default max_phash_dist=20 keeps ~89% of frames (~340k) while excluding
+    the clearly suspect tail. Frames with NULL phash_dist are also excluded
+    (228 frames where pHash was not computed).
+
+    Negative examples: random frames sampled from videos in 'frames_extracted'
+    status (frames extracted but no SIFT match found).
 
     Returns (train_rows, val_rows).  Each row dict:
         img_path     : str, relative to data_dir
@@ -83,7 +94,9 @@ def load_from_packopening_db(
         "       corner2_x, corner2_y, corner3_x, corner3_y "
         "FROM frames "
         "WHERE corner0_x IS NOT NULL AND corner1_x IS NOT NULL "
-        "  AND corner2_x IS NOT NULL AND corner3_x IS NOT NULL"
+        "  AND corner2_x IS NOT NULL AND corner3_x IS NOT NULL "
+        "  AND phash_dist IS NOT NULL AND phash_dist <= ?",
+        (max_phash_dist,),
     ).fetchall()
 
     positives = []
