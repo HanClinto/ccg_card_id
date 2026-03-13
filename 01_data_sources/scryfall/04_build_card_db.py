@@ -42,6 +42,16 @@ def _front_image_uri(card: dict) -> str:
     return ""
 
 
+def _illustration_id(card: dict) -> str:
+    """Extract illustration_id, falling back to front card face for DFCs."""
+    illust = card.get("illustration_id", "")
+    if not illust:
+        faces = card.get("card_faces")
+        if faces:
+            illust = faces[0].get("illustration_id", "")
+    return illust
+
+
 def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +86,7 @@ def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
             batch.append((
                 card.get("id", ""),
                 card.get("oracle_id", ""),
-                card.get("illustration_id", ""),
+                _illustration_id(card),
                 card.get("name", ""),
                 card.get("lang", "en"),
                 card.get("set", "").lower(),
