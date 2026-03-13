@@ -325,11 +325,17 @@ def load_gallery(
     gallery: list[dict] = []
     with tqdm(all_npz, unit="card", desc="  loading gallery", leave=False) as pbar:
         for sc, npz_path in pbar:
-            card_id = npz_path.stem
+            stem = npz_path.stem
+            if stem.endswith("_back"):
+                card_id = stem[:-5]
+                face = "back"
+            else:
+                card_id = stem
+                face = "front"
             kp_array, descs = load_sift_features(npz_path)
             ref_phash = None
             if _PHASH_AVAILABLE:
-                ref_img_path = (cfg.scryfall_images_dir / "front"
+                ref_img_path = (cfg.scryfall_images_dir / face
                                 / card_id[0] / card_id[1] / f"{card_id}.png")
                 ref_img = cv2.imread(str(ref_img_path))
                 if ref_img is not None:

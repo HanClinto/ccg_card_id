@@ -52,6 +52,22 @@ def _illustration_id(card: dict) -> str:
     return illust
 
 
+def _back_illustration_id(card: dict) -> str:
+    """Return the back face illustration_id for DFCs, empty string otherwise."""
+    faces = card.get("card_faces")
+    if faces and len(faces) >= 2:
+        return faces[1].get("illustration_id", "")
+    return ""
+
+
+def _back_image_uri(card: dict) -> str:
+    """Return the back face PNG URL for DFCs, empty string otherwise."""
+    faces = card.get("card_faces")
+    if faces and len(faces) >= 2:
+        return faces[1].get("image_uris", {}).get("png", "")
+    return ""
+
+
 def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -95,10 +111,12 @@ def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
                 _front_image_uri(card),
                 card.get("collector_number", ""),
                 card.get("rarity", ""),
+                _back_illustration_id(card),
+                _back_image_uri(card),
             ))
             if len(batch) >= 10_000:
                 con.executemany(
-                    "INSERT OR REPLACE INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     batch,
                 )
                 inserted += len(batch)
@@ -106,7 +124,7 @@ def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
 
         if batch:
             con.executemany(
-                "INSERT OR REPLACE INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 batch,
             )
             inserted += len(batch)

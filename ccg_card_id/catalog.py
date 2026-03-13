@@ -33,17 +33,19 @@ from .config import cfg
 
 DDL = """
 CREATE TABLE IF NOT EXISTS cards (
-    id               TEXT PRIMARY KEY,
-    oracle_id        TEXT,
-    illustration_id  TEXT,
-    name             TEXT,
-    lang             TEXT NOT NULL DEFAULT 'en',
-    set_code         TEXT NOT NULL DEFAULT '',
-    layout           TEXT,
-    image_status     TEXT,
-    image_uri_png    TEXT,
-    collector_number TEXT,
-    rarity           TEXT
+    id                   TEXT PRIMARY KEY,
+    oracle_id            TEXT,
+    illustration_id      TEXT,
+    name                 TEXT,
+    lang                 TEXT NOT NULL DEFAULT 'en',
+    set_code             TEXT NOT NULL DEFAULT '',
+    layout               TEXT,
+    image_status         TEXT,
+    image_uri_png        TEXT,
+    collector_number     TEXT,
+    rarity               TEXT,
+    back_illustration_id TEXT,
+    back_image_uri_png   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_cards_set_lang      ON cards(set_code, lang);

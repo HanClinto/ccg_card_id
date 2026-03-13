@@ -65,16 +65,34 @@ def load_cards_for_sets(data_dir: Path, set_codes: list[str], lang: str = "en") 
         card_id = card["id"]
         if not card_id:
             continue
-        img_path = images_dir / "front" / card_id[0] / card_id[1] / f"{card_id}.png"
-        if not img_path.exists():
-            continue
-        results.append({
-            "card_id": card_id,
-            "set_code": card["set_code"],
-            "lang": lang,
-            "image_path": img_path,
-            "illustration_id": card.get("illustration_id", ""),
-        })
+
+        # Front face
+        front_path = images_dir / "front" / card_id[0] / card_id[1] / f"{card_id}.png"
+        if front_path.exists():
+            results.append({
+                "card_id": card_id,
+                "set_code": card["set_code"],
+                "lang": lang,
+                "face": "front",
+                "image_path": front_path,
+                "illustration_id": card.get("illustration_id", ""),
+                "cache_stem": card_id,
+            })
+
+        # Back face (DFCs only)
+        if card.get("back_image_uri_png"):
+            back_path = images_dir / "back" / card_id[0] / card_id[1] / f"{card_id}.png"
+            if back_path.exists():
+                results.append({
+                    "card_id": card_id,
+                    "set_code": card["set_code"],
+                    "lang": lang,
+                    "face": "back",
+                    "image_path": back_path,
+                    "illustration_id": card.get("back_illustration_id", ""),
+                    "cache_stem": f"{card_id}_back",
+                })
+
     return results
 
 
@@ -126,7 +144,7 @@ def _process_set(set_code: str, lang: str, data_dir: Path, cache_root: Path,
     cached = 0
     for card in cards:
         cache_dir = sift_cache_key(card["set_code"], card["lang"])
-        out_path = cache_root / cache_dir / f"{card['card_id']}.npz"
+        out_path = cache_root / cache_dir / f"{card['cache_stem']}.npz"
         if out_path.exists() and not rebuild:
             cached += 1
         else:
@@ -262,7 +280,7 @@ def main() -> None:
             cached = 0
             for card in cards:
                 cache_dir = sift_cache_key(card["set_code"], card["lang"])
-                out_path = cache_root / cache_dir / f"{card['card_id']}.npz"
+                out_path = cache_root / cache_dir / f"{card['cache_stem']}.npz"
                 if out_path.exists() and not args.rebuild:
                     cached += 1
                 else:
