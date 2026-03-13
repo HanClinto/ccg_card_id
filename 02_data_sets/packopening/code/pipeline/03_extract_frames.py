@@ -141,13 +141,17 @@ def main() -> None:
             sys.exit(1)
         videos = [v]
 
+    current_video_id: list[str | None] = [None]
+
     def _process_one(video) -> bool:
         """Extract frames for a single already-claimed video. Returns True on success."""
+        current_video_id[0] = video["video_id"]
         print(f"\n[{video['video_id']}] {video['title'][:70]}")
         mp4_path = raw_dir / video["slug"] / f"{video['slug']}.mp4"
         if not mp4_path.exists():
             print(f"  ERROR: video file not found: {mp4_path}", file=sys.stderr)
             set_video_status(con, video["video_id"], "error")
+            current_video_id[0] = None
             return False
         try:
             frames_dir = frames_root / video["slug"]
@@ -162,28 +166,40 @@ def main() -> None:
             print(f"  status reverted to 'downloaded' — will retry on next --all run", file=sys.stderr)
             set_video_status(con, video["video_id"], "downloaded")
             return False
+        finally:
+            current_video_id[0] = None
 
     ok = failed = 0
-    if videos is None:
-        # --all: claim one video at a time so multiple workers can run safely
-        channel = args.channel or None
-        if channel:
-            print(f"Filtering to channel: {channel}")
-        while True:
-            video = claim_next_video(con, "downloaded", "processing", channel=channel)
-            if video is None:
-                print("No more videos to process.")
-                break
-            if _process_one(video):
-                ok += 1
-            else:
-                failed += 1
-    else:
-        for video in videos:
-            if _process_one(video):
-                ok += 1
-            else:
-                failed += 1
+    try:
+        if videos is None:
+            # --all: claim one video at a time so multiple workers can run safely
+            channel = args.channel or None
+            if channel:
+                print(f"Filtering to channel: {channel}")
+            while True:
+                video = claim_next_video(con, "downloaded", "processing", channel=channel)
+                if video is None:
+                    print("No more videos to process.")
+                    break
+                if _process_one(video):
+                    ok += 1
+                else:
+                    failed += 1
+        else:
+            for video in videos:
+                set_video_status(con, video["video_id"], "processing")
+                if _process_one(video):
+                    ok += 1
+                else:
+                    failed += 1
+    except KeyboardInterrupt:
+        vid_id = current_video_id[0]
+        if vid_id:
+            print(f"\n[interrupted] resetting {vid_id} → downloaded", file=sys.stderr)
+            set_video_status(con, vid_id, "downloaded")
+        else:
+            print("\n[interrupted]", file=sys.stderr)
+        sys.exit(0)
 
     print(f"\nDone: {ok} OK, {failed} failed.")
     if ok:

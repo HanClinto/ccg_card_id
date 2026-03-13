@@ -122,18 +122,33 @@ def main() -> None:
         videos = [v]
 
     ok = failed = 0
-    for video in videos:
-        print(f"\n[{video['video_id']}] {video['title'][:70]}")
-        set_video_status(con, video["video_id"], "downloading")
-        try:
-            mp4_path = download_video(dict(video), raw_dir, force=args.force, browser=args.browser)
-            set_video_status(con, video["video_id"], "downloaded")
-            print(f"  OK: {mp4_path}")
-            ok += 1
-        except Exception as e:
-            print(f"  ERROR: {e}", file=sys.stderr)
-            print(f"  status left as 'pending' — will retry on next --all run", file=sys.stderr)
-            failed += 1
+    current_video_id: list[str | None] = [None]
+
+    try:
+        for video in videos:
+            print(f"\n[{video['video_id']}] {video['title'][:70]}")
+            current_video_id[0] = video["video_id"]
+            set_video_status(con, video["video_id"], "downloading")
+            try:
+                mp4_path = download_video(dict(video), raw_dir, force=args.force, browser=args.browser)
+                set_video_status(con, video["video_id"], "downloaded")
+                print(f"  OK: {mp4_path}")
+                ok += 1
+            except Exception as e:
+                print(f"  ERROR: {e}", file=sys.stderr)
+                set_video_status(con, video["video_id"], "pending")
+                print(f"  status reset to 'pending' — will retry on next --all run", file=sys.stderr)
+                failed += 1
+            finally:
+                current_video_id[0] = None
+    except KeyboardInterrupt:
+        vid_id = current_video_id[0]
+        if vid_id:
+            print(f"\n[interrupted] resetting {vid_id} → pending", file=sys.stderr)
+            set_video_status(con, vid_id, "pending")
+        else:
+            print("\n[interrupted]", file=sys.stderr)
+        sys.exit(0)
 
     print(f"\nDownloaded {ok}. Failures: {failed}.")
     if ok:
