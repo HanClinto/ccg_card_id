@@ -92,10 +92,17 @@ def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
     con = sqlite3.connect(tmp_path)
     con.executescript(DDL)
 
+    # Collect set names while iterating cards
+    set_names: dict[str, str] = {}
+
     inserted = skipped = 0
     with tqdm(cards, unit="card", desc="Building DB") as pbar:
         batch = []
         for card in pbar:
+            sc = card.get("set", "").lower()
+            sn = card.get("set_name", "")
+            if sc and sn and sc not in set_names:
+                set_names[sc] = sn
             if card.get("image_status") in ("missing", "placeholder"):
                 skipped += 1
                 continue
@@ -129,6 +136,10 @@ def build(src_json: Path, db_path: Path, rebuild: bool = False) -> None:
             )
             inserted += len(batch)
 
+    con.executemany(
+        "INSERT OR REPLACE INTO sets VALUES (?,?)",
+        list(set_names.items()),
+    )
     con.commit()
     con.close()
 

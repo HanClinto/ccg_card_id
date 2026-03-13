@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import sqlite3
 import sys
 from collections import defaultdict
@@ -44,19 +43,10 @@ def main() -> None:
 
     catalog_db = cfg.card_db_path
     packopening_db = cfg.data_dir / "datasets" / "packopening" / "packopening.db"
-    all_cards_path = cfg.data_dir / "all_cards.json"
 
-    # --- Set name lookup ---
-    print("Loading set names...")
-    set_name_map: dict[str, str] = {}
-    with open(all_cards_path) as f:
-        all_cards = json.load(f)
-    for c in all_cards:
-        sc = c.get("set", "").lower()
-        sn = c.get("set_name", "")
-        if sc and sn and sc not in set_name_map:
-            set_name_map[sc] = sn
-    print(f"  {len(set_name_map):,} set names loaded")
+    # --- Set name lookup from catalog DB ---
+    from ccg_card_id.catalog import catalog
+    set_name_map: dict[str, str] = catalog.set_names()
 
     ccon = sqlite3.connect(str(catalog_db))
     pcon = sqlite3.connect(str(packopening_db))

@@ -32,6 +32,11 @@ from .config import cfg
 # ---------------------------------------------------------------------------
 
 DDL = """
+CREATE TABLE IF NOT EXISTS sets (
+    set_code  TEXT PRIMARY KEY,
+    set_name  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS cards (
     id                   TEXT PRIMARY KEY,
     oracle_id            TEXT,
@@ -126,6 +131,11 @@ class Catalog:
         """Return all set codes present in the catalog."""
         rows = self._rows("SELECT DISTINCT set_code FROM cards")
         return {r["set_code"] for r in rows}
+
+    def set_names(self) -> dict[str, str]:
+        """Return {set_code: set_name} for all sets in the catalog."""
+        rows = self._rows("SELECT set_code, set_name FROM sets")
+        return {r["set_code"]: r["set_name"] for r in rows}
 
     def set_codes_for_lang(self, lang: str) -> set[str]:
         rows = self._rows(
