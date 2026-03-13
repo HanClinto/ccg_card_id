@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import importlib.util as _ilu
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -384,6 +385,7 @@ def _match_batch(
     video_id: str,
     data_dir: Path,
     con,
+    card_id_to_illust: dict[str, str] | None = None,
     desc: str = "  matching",
 ) -> tuple[int, int, int]:
     """Run the SIFT matching loop over frame_paths.
@@ -469,15 +471,16 @@ def _match_batch(
             xs, ys = [c[0] for c in corners], [c[1] for c in corners]
             area_pct = (max(xs) - min(xs)) * (max(ys) - min(ys))
 
+            illust_id = (card_id_to_illust or {}).get(best["card_id"])
             con.execute(
                 """INSERT OR IGNORE INTO frames
-                   (video_id, frame_path, aligned_path, card_id, set_code,
+                   (video_id, frame_path, aligned_path, card_id, illustration_id, set_code,
                     num_matches, corner0_x, corner0_y, corner1_x, corner1_y,
                     corner2_x, corner2_y, corner3_x, corner3_y, matching_area_pct,
                     phash_dist)
-                   VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?)""",
+                   VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?)""",
                 (video_id, rel_path, str(aligned_path.relative_to(data_dir)),
-                 best["card_id"], best["set_code"], inliers,
+                 best["card_id"], illust_id, best["set_code"], inliers,
                  corners[0][0], corners[0][1], corners[1][0], corners[1][1],
                  corners[2][0], corners[2][1], corners[3][0], corners[3][1], area_pct,
                  phash_dist),
@@ -553,6 +556,21 @@ def process_video(
     global_flann = build_global_flann(all_descs)
     print("done")
 
+    # Build card_id → illustration_id lookup from catalog
+    card_id_to_illust: dict[str, str] = {}
+    _catalog_base = fast_data_dir if fast_data_dir is not None else data_dir
+    _catalog_db = _catalog_base / "catalog" / "scryfall" / "cards.db"
+    if _catalog_db.exists():
+        _ccon = sqlite3.connect(str(_catalog_db))
+        for _row in _ccon.execute("SELECT id, illustration_id FROM cards WHERE lang='en'"):
+            if _row[1]:
+                card_id_to_illust[_row[0].lower()] = _row[1].lower()
+        _ccon.close()
+        print(f"  illustration_id lookup: {len(card_id_to_illust):,} cards")
+    else:
+        print(f"  WARNING: catalog DB not found at {_catalog_db} — illustration_id will be NULL",
+              file=sys.stderr)
+
     homography_flann = build_flann()
     sift = cv2.SIFT_create()
 
@@ -560,6 +578,7 @@ def process_video(
         frame_paths, gallery, global_flann, desc_to_card,
         homography_flann, sift, already_done, aligned_dir,
         video_id, data_dir, con,
+        card_id_to_illust=card_id_to_illust,
     )
     print(f"  matched={matched}  discarded={discarded}  skipped={skipped}  total={len(frame_paths)}")
     return matched, discarded
