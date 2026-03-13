@@ -48,6 +48,7 @@ def download_video(video: dict, raw_dir: Path, force: bool = False, browser: str
         "--write-info-json",
         "--no-playlist",
         "--cookies-from-browser", browser,
+        "--remote-components", "ejs:github",
         "--output", str(out_dir / f"{slug}.%(ext)s"),
         video["url"],
     ]
