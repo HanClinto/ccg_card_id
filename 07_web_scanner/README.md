@@ -136,11 +136,12 @@ fields are absent.
 
 ```bash
 cd 07_web_scanner/server
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 All packages except `torch` install quickly.  If you already have the
-project's `.venv312` activated you probably have most of them already.
+project's `.venv312` activated you probably have most of them already
+(`uv pip sync requirements.txt` to make the venv match exactly).
 
 ### 2. Populate prices (one-time)
 
@@ -148,7 +149,7 @@ Reads `default_cards.json` from `cfg.data_dir` and adds a `prices` table to
 the catalog SQLite database:
 
 ```bash
-python 07_web_scanner/server/populate_prices.py
+uv run python 07_web_scanner/server/populate_prices.py
 ```
 
 Re-running is safe — it drops and recreates the table.
@@ -157,16 +158,16 @@ Re-running is safe — it drops and recreates the table.
 
 ```bash
 # Default: Canny detector, pHash 16x16 identifier, port 8000
-python 07_web_scanner/server/app.py
+uv run python 07_web_scanner/server/app.py
 
 # Specify detector and identifier
-python 07_web_scanner/server/app.py \
+uv run python 07_web_scanner/server/app.py \
     --detector canny \
     --identifier phash_16x16 \
     --port 8000
 
 # Different host (e.g. bind to all interfaces for phone access)
-python 07_web_scanner/server/app.py --host 0.0.0.0 --port 8000
+uv run python 07_web_scanner/server/app.py --host 0.0.0.0 --port 8000
 ```
 
 ### 4. Open the client

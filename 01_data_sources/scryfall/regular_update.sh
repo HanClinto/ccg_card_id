@@ -5,22 +5,21 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-source .venv312/bin/activate
 
 echo "=== Step 1: Sync bulk data ==="
-python 01_data_sources/scryfall/01_sync_data.py
+uv run python 01_data_sources/scryfall/01_sync_data.py
 
 echo ""
 echo "=== Step 2: Rebuild card catalog DB ==="
-python 01_data_sources/scryfall/02_build_card_db.py --rebuild
+uv run python 01_data_sources/scryfall/02_build_card_db.py --rebuild
 
 echo ""
 echo "=== Step 3: Sync card images ==="
-python 01_data_sources/scryfall/03_sync_images.py
+uv run python 01_data_sources/scryfall/03_sync_images.py
 
 echo ""
 echo "=== Step 4: Refresh TCGplayer prices ==="
-python 07_web_scanner/server/populate_prices.py
+uv run python 07_web_scanner/server/populate_prices.py
 
 echo ""
 echo "=== Done ==="

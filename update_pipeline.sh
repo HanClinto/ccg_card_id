@@ -34,7 +34,6 @@ for arg in "$@"; do
 done
 
 cd "$(git rev-parse --show-toplevel)"
-source .venv312/bin/activate
 
 echo "=================================================="
 echo " CCG Card ID — full update pipeline"
@@ -42,16 +41,16 @@ echo "=================================================="
 echo ""
 
 echo "=== Step 1: Sync Scryfall bulk data ==="
-python 01_data_sources/scryfall/01_sync_data.py
+uv run python 01_data_sources/scryfall/01_sync_data.py
 
 echo ""
 echo "=== Step 2: Rebuild card catalog DB ==="
-python 01_data_sources/scryfall/02_build_card_db.py --rebuild
+uv run python 01_data_sources/scryfall/02_build_card_db.py --rebuild
 
 if [ "$SKIP_IMAGES" = false ]; then
   echo ""
   echo "=== Step 3: Sync Scryfall card images ==="
-  python 01_data_sources/scryfall/03_sync_images.py
+  uv run python 01_data_sources/scryfall/03_sync_images.py
 else
   echo ""
   echo "=== Step 3: Sync Scryfall card images (SKIPPED) ==="
@@ -59,16 +58,16 @@ fi
 
 echo ""
 echo "=== Step 4: Refresh TCGplayer prices ==="
-python 07_web_scanner/server/populate_prices.py
+uv run python 07_web_scanner/server/populate_prices.py
 
 echo ""
 echo "=== Step 5: Rebuild artwork ID manifest ==="
-python 04_build/mobilevit_xxs/01_build_manifest.py
+uv run python 04_build/mobilevit_xxs/01_build_manifest.py
 
 if [ "$SKIP_IMAGES" = false ]; then
   echo ""
   echo "=== Step 6: Precache gallery images at 224x224 ==="
-  python 06_eval/precache_gallery.py --workers 8
+  uv run python 06_eval/precache_gallery.py --workers 8
 else
   echo ""
   echo "=== Step 6: Precache gallery images (SKIPPED) ==="
@@ -77,7 +76,7 @@ fi
 if [ "$SKIP_GALLERY" = false ]; then
   echo ""
   echo "=== Step 7: Recompute gallery embeddings ==="
-  python 05_build/02_update_gallery_vectors.py
+  uv run python 05_build/02_update_gallery_vectors.py
 else
   echo ""
   echo "=== Step 7: Recompute gallery embeddings (SKIPPED) ==="
