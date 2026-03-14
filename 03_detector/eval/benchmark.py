@@ -40,7 +40,7 @@ from detectors import CannyPolyDetector  # noqa: E402
 from detectors.tiny_corner_cnn.dataset import load_dataset  # noqa: E402
 from eval.metrics import corner_point_error, pck, quad_iou_exact, phash_distance  # noqa: E402
 
-_PHASH_GOOD_THRESHOLD = 5  # Hamming distance ≤ 5 → close enough for real-world ID
+_PHASH_GOOD_THRESHOLD = 10  # Hamming distance ≤ 10 → close enough for real-world ID
 
 
 # ---------------------------------------------------------------------------

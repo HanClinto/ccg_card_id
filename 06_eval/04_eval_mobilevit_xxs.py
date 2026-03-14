@@ -158,6 +158,9 @@ def main() -> None:
                         "8=64-bit, 16=256-bit, 32=1024-bit.")
     p.add_argument("--skip-phash", action="store_true",
                    help="Skip pHash baseline evaluation")
+    p.add_argument("--fast-data-dir", type=Path, default=cfg.fast_data_dir,
+                   help="Local SSD cache dir for pre-resized gallery images "
+                        "(from precache_gallery.py). Checked first; falls back to data-dir.")
     args = p.parse_args()
 
     if not args.manifest.exists():
@@ -189,6 +192,26 @@ def main() -> None:
     # Load gallery
     gallery_paths, gallery_card_ids, gallery_illus_ids = load_manifest_gallery(args.manifest)
     card_to_illus = _build_card_to_illustration(args.manifest)
+
+    # Remap gallery paths to local SSD cache if available (precache_gallery.py caches as .jpg).
+    if args.fast_data_dir and args.fast_data_dir.exists():
+        data_dir_root = cfg.data_dir
+        remapped: list[Path] = []
+        n_fast = 0
+        for p in gallery_paths:
+            try:
+                rel = p.relative_to(data_dir_root) if p.is_absolute() else p
+            except ValueError:
+                rel = p
+            fast = (args.fast_data_dir / rel).with_suffix(".jpg")
+            if fast.exists():
+                remapped.append(fast)
+                n_fast += 1
+            else:
+                remapped.append(p)
+        if n_fast:
+            print(f"Gallery: {n_fast:,}/{len(gallery_paths):,} images remapped to fast cache")
+        gallery_paths = remapped
 
     # Collect query sources: list of (name, paths, card_ids, illus_ids, cache_dir)
     QuerySource = tuple  # (name, paths, card_ids, illus_ids, cache_dir)
@@ -298,11 +321,16 @@ def main() -> None:
     for ckpt in args.checkpoint:
         print(f"Running fine-tuned checkpoint: {ckpt}")
         model, ckpt_meta = load_finetuned_model(ckpt, device)
-        emb_dim = int(ckpt_meta.get("args", {}).get("embedding_dim", 128))
+        cargs = ckpt_meta.get("args", {})
+        # Support both single-task (embedding_dim, label_field) and
+        # multitask (embedding_dims, label_fields) checkpoint formats.
+        emb_dim = int(cargs.get("embedding_dim") or (cargs.get("embedding_dims") or [128])[0])
         epoch = int(ckpt_meta.get("epoch", 0))
-        label_field = str(ckpt_meta.get(
-            "label_field", ckpt_meta.get("args", {}).get("label_field", "card_id")
-        ))
+        raw_field = ckpt_meta.get("label_field") or cargs.get("label_field")
+        if raw_field is None:
+            fields = cargs.get("label_fields") or ["card_id"]
+            raw_field = "+".join(str(f) for f in fields)
+        label_field = str(raw_field)
         variant = f"mobilevit_xxs_ft_{label_field}_e{epoch}_{emb_dim}d"
         _run_model(model, variant, emb_dim=emb_dim)
 

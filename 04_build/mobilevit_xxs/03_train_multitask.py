@@ -368,6 +368,13 @@ def run(args: argparse.Namespace) -> None:
     start_epoch = 1
     history: list[dict] = []
 
+    if args.seed_checkpoint is not None:
+        seed_ckpt = torch.load(args.seed_checkpoint, map_location="cpu", weights_only=False)
+        backbone_sd = {k: v for k, v in seed_ckpt["model"].items() if k.startswith("backbone.")}
+        missing, unexpected = model.load_state_dict(backbone_sd, strict=False)
+        print(f"Seeded backbone from {args.seed_checkpoint}")
+        print(f"  Loaded {len(backbone_sd)} backbone keys — missing {len(missing)}, unexpected {len(unexpected)}")
+
     resume = args.resume_checkpoint
     auto_ckpt = run_dir / "last.pt"
     if resume is None and not args.rebuild and auto_ckpt.exists():
@@ -524,6 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="DataLoader worker processes (default: 4; use 0 on MPS if you hit issues)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume-checkpoint", type=Path, default=None)
+    p.add_argument("--seed-checkpoint", type=Path, default=None,
+                   help="Load backbone weights only from a single-task checkpoint (ignores ArcFace heads and optimizer)")
     p.add_argument("--rebuild", action="store_true",
                    help="Ignore last.pt auto-resume and train from scratch")
     p.add_argument("--checkpoint-every", type=int, default=5)

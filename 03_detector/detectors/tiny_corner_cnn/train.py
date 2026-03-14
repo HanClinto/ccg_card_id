@@ -170,16 +170,18 @@ def run(args: argparse.Namespace) -> None:
     val_ds   = CornerDataset(val_rows,   data_dir, augment=False, fast_data_dir=fast_data_dir)
     test_ds  = CornerDataset(test_rows,  data_dir, augment=False) if test_rows else None
 
+    _dl_kwargs = dict(
+        num_workers=args.num_workers,
+        pin_memory=False,          # MPS tensors can't use shared memory
+        persistent_workers=(args.num_workers > 0),
+    )
     train_dl = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, drop_last=True,
+        train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True, **_dl_kwargs,
     )
     val_dl = DataLoader(
-        val_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers,
+        val_ds, batch_size=args.batch_size, shuffle=False, **_dl_kwargs,
     )
-    test_dl = (DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
-                          num_workers=args.num_workers)
+    test_dl = (DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, **_dl_kwargs)
                if test_ds else None)
 
     device = pick_device(args.cpu)

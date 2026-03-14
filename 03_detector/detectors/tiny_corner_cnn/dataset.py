@@ -285,15 +285,34 @@ class CornerDataset(Dataset):
         return len(self.rows)
 
     def __getitem__(self, idx: int) -> dict:
-        row = self.rows[idx]
-        rel = row["img_path"]
-        # Use fast cache if available, fall back to original
-        if self.fast_data_dir is not None:
-            cached = self.fast_data_dir / rel
-            img_path = cached if cached.exists() else self.data_dir / rel
+        # Loop to skip missing files (rare: DB entries whose frames were never extracted)
+        for attempt in range(len(self.rows)):
+            row = self.rows[(idx + attempt) % len(self.rows)]
+            rel = row["img_path"]
+            # Use fast cache if available, fall back to original
+            from_cache = False
+            if self.fast_data_dir is not None:
+                cached = self.fast_data_dir / rel
+                if cached.exists():
+                    img_path = cached
+                    from_cache = True
+                else:
+                    img_path = self.data_dir / rel
+            else:
+                img_path = self.data_dir / rel
+            try:
+                img = Image.open(img_path).convert("RGB")
+                break
+            except (FileNotFoundError, OSError):
+                continue
         else:
-            img_path = self.data_dir / rel
-        img = Image.open(img_path).convert("RGB")
+            # All rows missing — return a black image (should never happen)
+            img = Image.new("RGB", (INPUT_SIZE, INPUT_SIZE))
+            row = self.rows[idx]
+            from_cache = True
+        # If we fell back to the original (not pre-resized), resize now
+        if not from_cache and img.size != (INPUT_SIZE, INPUT_SIZE):
+            img = img.resize((INPUT_SIZE, INPUT_SIZE), Image.BILINEAR)
 
         corners = row["corners"].copy() if row["corners"] is not None else None
 

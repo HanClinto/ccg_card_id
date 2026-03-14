@@ -64,7 +64,10 @@ class FineTunedEmbeddingModel(torch.nn.Module):
 def load_finetuned_model(checkpoint: Path, device: torch.device) -> tuple[torch.nn.Module, dict]:
     ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
     cargs = ckpt.get("args", {})
-    model = FineTunedEmbeddingModel(cargs.get("backbone", "mobilevit_xxs"), int(cargs.get("embedding_dim", 128)))
+    # Support both single-task ("embedding_dim") and multitask ("embedding_dims") checkpoints.
+    # Multitask shared-head checkpoints have the same backbone+proj structure; use first dim.
+    emb_dim = cargs.get("embedding_dim") or (cargs.get("embedding_dims") or [128])[0]
+    model = FineTunedEmbeddingModel(cargs.get("backbone", "mobilevit_xxs"), int(emb_dim))
     model.load_state_dict(ckpt["model"])
     model = model.to(device).eval()
     return model, ckpt
