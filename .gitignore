@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Self-signed TLS cert for web scanner (generated locally by app.py --ssl)
+07_web_scanner/server/ssl/
+
 # Project-specific files
 # Ignore "cache" folders
 cache/

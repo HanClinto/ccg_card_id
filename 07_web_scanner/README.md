@@ -166,9 +166,16 @@ uv run python 07_web_scanner/server/app.py \
     --identifier phash_16x16 \
     --port 8000
 
-# Different host (e.g. bind to all interfaces for phone access)
-uv run python 07_web_scanner/server/app.py --host 0.0.0.0 --port 8000
+# Bind to all interfaces for phone/tablet access — requires HTTPS for camera
+uv run python 07_web_scanner/server/app.py --host 0.0.0.0 --port 8000 --ssl
 ```
+
+> **Camera access requires a secure context.**  Browsers block `getUserMedia`
+> on plain HTTP except for `localhost`.  When accessing from another device on
+> the LAN, use `--ssl`.  A self-signed certificate is generated automatically
+> in `server/ssl/` on first run.  Your browser will show a security warning —
+> click **Advanced → Accept the Risk** (Firefox) or **Advanced → Proceed**
+> (Chrome) to continue.  You only need to do this once per browser.
 
 ### 4. Open the client
 

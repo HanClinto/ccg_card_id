@@ -59,6 +59,9 @@ _parser.add_argument("--detector", default="canny",
                      help="Default detector name (e.g. 'canny', 'tinycornercnn_e50')")
 _parser.add_argument("--identifier", default="phash_16x16",
                      help="Default identifier name (e.g. 'phash_16x16', 'arcface_illustration_id_e75')")
+_parser.add_argument("--ssl", action="store_true",
+                     help="Serve over HTTPS using a self-signed certificate. "
+                          "Required when accessing from other devices on the LAN.")
 
 # parse_known_args so uvicorn's own args don't cause errors
 _args, _ = _parser.parse_known_args()
@@ -366,15 +369,59 @@ async def identify(body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# TLS helpers
+# ---------------------------------------------------------------------------
+
+def _ensure_self_signed_cert(cert_path: Path, key_path: Path) -> None:
+    """Generate a self-signed certificate via openssl if it doesn't exist."""
+    if cert_path.exists() and key_path.exists():
+        return
+    import subprocess
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Generating self-signed certificate → {cert_path}")
+    subprocess.run(
+        [
+            "openssl", "req", "-x509",
+            "-newkey", "rsa:2048",
+            "-keyout", str(key_path),
+            "-out", str(cert_path),
+            "-days", "3650",
+            "-nodes",
+            "-subj", "/CN=ccg-scanner",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print("Certificate generated. Your browser will show a security warning —")
+    print("click 'Advanced' → 'Accept the Risk' (Firefox) or 'Proceed' (Chrome).")
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
 
+    _server_dir = Path(__file__).resolve().parent
+    ssl_kwargs: dict = {}
+    if _args.ssl:
+        _cert = _server_dir / "ssl" / "cert.pem"
+        _key  = _server_dir / "ssl" / "key.pem"
+        _ensure_self_signed_cert(_cert, _key)
+        ssl_kwargs = {"ssl_certfile": str(_cert), "ssl_keyfile": str(_key)}
+        scheme = "https"
+    else:
+        scheme = "http"
+
+    host_display = "localhost" if _args.host in ("127.0.0.1", "::1") else _args.host
+    print(f"Scanner UI → {scheme}://{host_display}:{_args.port}/app")
+
     uvicorn.run(
         "app:app",
         host=_args.host,
         port=_args.port,
         reload=False,
+        **ssl_kwargs,
     )
