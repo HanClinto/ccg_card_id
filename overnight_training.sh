@@ -6,6 +6,7 @@
 #   2. Resume single-task ArcFace (illustration_id) from e90 for 15 more epochs
 #   3. Restart multitask ArcFace (illustration_id + set_code) from scratch,
 #      seeded from the single-task last.pt, with arcface-scale=8.0 to prevent collapse
+#   4. Continue corner detector training for 100 more epochs (auto-resumes from last.pt)
 #
 # Usage (run from project root, leave terminal open or use nohup/screen):
 #   bash overnight_training.sh
@@ -78,4 +79,18 @@ uv run python 04_build/mobilevit_xxs/03_train_multitask.py \
   --seed-checkpoint "$SEED_CKPT"
 
 log "Multitask ArcFace complete."
+
+# ---------------------------------------------------------------------------
+# Step 4 — continue corner detector training (100 more epochs from last.pt)
+# ---------------------------------------------------------------------------
+
+log "Resuming corner detector training (100 more epochs from last.pt)..."
+uv run python 03_detector/detectors/tiny_corner_cnn/train.py \
+  --train-source packopening \
+  --epochs 100 \
+  --batch-size 64 \
+  --num-workers 6 \
+  --checkpoint-every 5
+
+log "Corner detector training complete."
 log "All training done."
