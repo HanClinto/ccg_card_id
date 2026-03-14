@@ -19,4 +19,8 @@ echo "=== Step 3: Sync card images ==="
 python 01_data_sources/scryfall/03_sync_images.py
 
 echo ""
+echo "=== Step 4: Refresh TCGplayer prices ==="
+python 07_web_scanner/server/populate_prices.py
+
+echo ""
 echo "=== Done ==="
