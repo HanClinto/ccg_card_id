@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CCG Card Scanner</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>CCG Card Scanner</h1>
+    <span id="status-indicator" class="status-dot idle" title="Connection status"></span>
+  </header>
+
+  <main class="layout">
+
+    <!-- ── LEFT COLUMN: camera ─────────────────────────────────────── -->
+    <section class="camera-col">
+      <div class="video-wrapper">
+        <!-- Live camera feed -->
+        <video id="video" autoplay playsinline muted></video>
+        <!-- Corner overlay drawn on top of the video -->
+        <canvas id="overlay"></canvas>
+        <!-- Confidence badge -->
+        <div id="confidence-badge" class="confidence-badge hidden">–</div>
+      </div>
+
+      <!-- Settings panel -->
+      <div class="settings-panel">
+        <h2>Settings</h2>
+
+        <div class="field-row">
+          <label for="server-url">Server URL</label>
+          <input type="text" id="server-url" value="http://localhost:8000" />
+        </div>
+
+        <div class="field-row">
+          <label for="detector-select">Detector</label>
+          <select id="detector-select">
+            <option value="canny">Canny (loading…)</option>
+          </select>
+        </div>
+
+        <div class="field-row">
+          <label for="identifier-select">Identifier</label>
+          <select id="identifier-select">
+            <option value="phash_16x16">pHash 16×16 (loading…)</option>
+          </select>
+        </div>
+
+        <div class="field-row">
+          <label for="fps-slider">FPS: <span id="fps-value">3</span></label>
+          <input type="range" id="fps-slider" min="1" max="10" value="3" />
+        </div>
+
+        <div class="field-row">
+          <label for="fill-at">Confirm after N matches</label>
+          <input type="number" id="fill-at" min="1" max="10" value="3" />
+        </div>
+
+        <div class="field-row">
+          <label for="cooldown-ms">Cooldown (ms)</label>
+          <input type="number" id="cooldown-ms" min="500" max="30000" step="500" value="4000" />
+        </div>
+
+        <div class="btn-row">
+          <button id="start-btn" class="btn-primary">Start</button>
+          <button id="stop-btn" class="btn-secondary" disabled>Stop</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── RIGHT COLUMN: results ────────────────────────────────────── -->
+    <section class="results-col">
+      <div class="results-header">
+        <h2>Scanned Cards</h2>
+        <div class="results-actions">
+          <button id="copy-btn" class="btn-secondary btn-sm">Copy CSV</button>
+          <button id="clear-btn" class="btn-secondary btn-sm">Clear</button>
+        </div>
+      </div>
+
+      <!-- Status bar showing current bucket state -->
+      <div id="bucket-status" class="bucket-status">Ready</div>
+
+      <!-- Card list — one row per confirmed scan -->
+      <textarea id="card-list" readonly placeholder="Confirmed cards will appear here…"></textarea>
+
+      <!-- Last confirmed card detail panel -->
+      <div id="last-card" class="last-card hidden">
+        <div class="last-card-name" id="last-card-name">–</div>
+        <div class="last-card-meta" id="last-card-meta">–</div>
+        <div class="last-card-price" id="last-card-price">–</div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="scanner.js"></script>
+</body>
+</html>

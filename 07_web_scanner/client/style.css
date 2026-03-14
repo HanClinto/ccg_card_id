@@ -1,0 +1,356 @@
+/* CCG Card Scanner — dark theme, two-column layout
+ *
+ * Layout:
+ *   header
+ *   main.layout
+ *     section.camera-col   (left — 55%)
+ *     section.results-col  (right — 45%)
+ *
+ * Design goals: functional, minimal, legible on any screen.
+ */
+
+/* ── Reset & base ───────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg:          #0f1117;
+  --surface:     #1a1d27;
+  --surface2:    #22263a;
+  --border:      #2e3350;
+  --text:        #d8daf0;
+  --text-muted:  #7a7fa8;
+  --accent:      #00e678;
+  --accent-dim:  #009d52;
+  --danger:      #e64a4a;
+  --warn:        #e6a23c;
+  --radius:      8px;
+  --gap:         14px;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Header ─────────────────────────────────────────────────────── */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+/* Connection status dot */
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.idle     { background: var(--text-muted); }
+.status-dot.ready    { background: var(--accent); }
+.status-dot.scanning { background: var(--accent); animation: pulse 1s infinite; }
+.status-dot.error    { background: var(--danger); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ── Two-column layout ──────────────────────────────────────────── */
+
+.layout {
+  display: flex;
+  height: calc(100vh - 46px);  /* fill below header */
+  overflow: hidden;
+}
+
+.camera-col {
+  display: flex;
+  flex-direction: column;
+  width: 55%;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.results-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  padding: var(--gap);
+  gap: var(--gap);
+}
+
+/* ── Camera / video area ────────────────────────────────────────── */
+
+.video-wrapper {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+
+#video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  transition: box-shadow 0.1s ease;
+}
+
+/* Green flash border on confirmed scan */
+#overlay.confirmed-flash {
+  box-shadow: inset 0 0 0 4px var(--accent);
+}
+
+.confidence-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.confidence-badge.hidden { display: none; }
+
+/* ── Settings panel ─────────────────────────────────────────────── */
+
+.settings-panel {
+  padding: var(--gap);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-panel h2 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.field-row label {
+  width: 160px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.field-row input[type="text"],
+.field-row input[type="number"],
+.field-row select {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 0.85rem;
+}
+
+.field-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+/* ── Buttons ────────────────────────────────────────────────────── */
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 6px 16px;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #000;
+}
+.btn-primary:hover:not(:disabled) { background: #00ff88; }
+
+.btn-secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--border); }
+
+.btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+
+/* ── Results column ─────────────────────────────────────────────── */
+
+.results-col h2 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.results-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bucket-status {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  background: var(--surface2);
+  border-radius: 4px;
+  flex-shrink: 0;
+  min-height: 26px;
+}
+
+#card-list {
+  flex: 1;
+  resize: none;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  font-family: "Cascadia Mono", "Fira Code", "Consolas", monospace;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  overflow-y: auto;
+}
+
+#card-list::placeholder {
+  color: var(--text-muted);
+}
+
+/* ── Last confirmed card ────────────────────────────────────────── */
+
+.last-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  flex-shrink: 0;
+  border-left: 3px solid var(--accent);
+}
+
+.last-card.hidden { display: none; }
+
+.last-card-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.last-card-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.last-card-price {
+  font-size: 0.9rem;
+  color: var(--accent);
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+/* Flash animation when a new card is confirmed */
+@keyframes flash-in {
+  0%   { border-left-color: #fff; background: #1e3d28; }
+  100% { border-left-color: var(--accent); background: var(--surface2); }
+}
+
+.last-card.flash-in {
+  animation: flash-in 0.5s ease-out forwards;
+}
+
+/* ── Scrollbar styling (Webkit) ─────────────────────────────────── */
+
+::-webkit-scrollbar         { width: 6px; height: 6px; }
+::-webkit-scrollbar-track   { background: var(--bg); }
+::-webkit-scrollbar-thumb   { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Responsive: stack columns on narrow screens ────────────────── */
+
+@media (max-width: 700px) {
+  .layout {
+    flex-direction: column;
+    height: auto;
+    overflow: auto;
+  }
+
+  .camera-col {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 60vh;
+  }
+
+  .results-col {
+    min-height: 40vh;
+  }
+}
