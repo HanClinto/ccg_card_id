@@ -60,10 +60,12 @@ class NeuralCornerDetectorInference(CardDetector):
         arch: str = "tiny",
         device: str | torch.device = "cpu",
         presence_threshold: float = 0.5,
+        ignore_presence: bool = True,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path)
         self.device = torch.device(device)
         self.presence_threshold = presence_threshold
+        self.ignore_presence = ignore_presence
 
         ckpt = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
         # Arch can be stored in checkpoint or passed explicitly
@@ -99,16 +101,17 @@ class NeuralCornerDetectorInference(CardDetector):
             pred_corners, pred_presence_logit = self.model(tensor)
 
         presence_prob = float(torch.sigmoid(pred_presence_logit).squeeze())
-        if presence_prob < self.presence_threshold:
+
+        corners_flat = pred_corners.squeeze().cpu().numpy()  # (8,)
+        corners = np.clip(corners_flat, 0.0, 1.0).reshape(4, 2).astype(np.float32)
+
+        if not self.ignore_presence and presence_prob < self.presence_threshold:
             return DetectionResult(
                 card_present=False,
                 corners=None,
                 confidence=presence_prob,
                 metadata={"presence_prob": presence_prob},
             )
-
-        corners_flat = pred_corners.squeeze().cpu().numpy()  # (8,)
-        corners = np.clip(corners_flat, 0.0, 1.0).reshape(4, 2).astype(np.float32)
 
         return DetectionResult(
             card_present=True,
