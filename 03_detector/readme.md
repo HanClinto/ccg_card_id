@@ -280,6 +280,154 @@ NeuralCornerDetector | 0.018  | 93.7%   | 0.94   | 97.2%     |  3.1%
 
 ---
 
+## Experiments
+
+### v0.1 — Baseline TinyCornerCNN (run1/run2, epochs 1–73)
+
+The first training attempt established a working pipeline and surfaced several important failure
+modes.
+
+**Setup:**
+
+| Parameter | Value |
+|---|---|
+| Architecture | TinyCornerCNN (44k parameters) |
+| Training data | packopening DB, phash ≤ 20, ~394k positives |
+| Negatives | None (presence classifier disabled — see below) |
+| Augmentation | Horizontal flip + ±30° fine rotation + color jitter |
+| Loss | SmoothL1 on fixed TL/TR/BR/BL corner order |
+| Learning rate | 3e-3 cosine decay to 3e-5 |
+| Batch size | 64 |
+| Epochs | 73 (early stop — architecture replaced) |
+
+**In-domain training curve:**
+
+| Epoch | Train Loss | Val Loss | Val CPE | Test CPE (clint) |
+|---|---|---|---|---|
+| 33 | 0.0200 | 0.0144 | 0.0750 | 0.230 |
+| 40 | 0.0124 | 0.0090 | 0.0552 | 0.237 |
+| 50 | 0.0110 | 0.0079 | 0.0514 | 0.279 |
+| 60 | 0.0105 | 0.0076 | 0.0499 | 0.238 |
+| 73 | 0.0101 | 0.0070 | 0.0477 | 0.254 |
+
+In-domain val CPE improved steadily. The clint test CPE (domain-generalization) plateaued around
+0.23–0.28 with no consistent improvement trend despite the in-domain gains.
+
+**Benchmark results vs Canny (all frames, `benchmark.py --split all`):**
+
+*Sol Ring — 307 frames, 21 card editions, aligned video captures:*
+
+| Detector | CPE↓ | PCK@5%↑ | IoU↑ | ID-able↑ | Det.Rate↑ |
+|---|---|---|---|---|---|
+| CannyPolyDetector | **0.022** | **98.9%** | **0.885** | **48.2%** | 100% |
+| TinyCornerCNN e32 | 0.187 | 8.1% | 0.352 | 0.0% | 100% |
+| TinyCornerCNN e40 | 0.194 | 4.9% | 0.311 | 0.0% | 100% |
+
+*Clint backgrounds — 1,267 frames, 39 cards, varied handheld captures with backgrounds:*
+
+| Detector | CPE↓ | PCK@5%↑ | IoU↑ | ID-able↑ | Det.Rate↑ |
+|---|---|---|---|---|---|
+| CannyPolyDetector | **0.160** | **50.2%** | **0.470** | **6.9%** | 86.6% |
+| TinyCornerCNN e32 | 0.229 | 4.4% | 0.316 | 0.0% | 100% |
+| TinyCornerCNN e40 | 0.237 | 3.6% | 0.216 | 0.0% | 100% |
+
+The neural detector was not competitive with Canny at 73 epochs on either dataset. The domain gap
+between packopening training data and real-world captures was roughly 5× (val CPE 0.047 vs test
+CPE 0.23–0.25). Corner accuracy was low enough that no dewarped crops passed pHash verification
+(ID-able = 0%).
+
+**Issues discovered and resolved:**
+
+*Presence classifier collapse.* When trained with negative examples (frames with no visible card),
+the model learned to minimize loss by predicting "no card" for everything. Root cause: the
+packopening dataset is ~34:1 positive-to-negative, so a near-constant "absent" prediction achieves
+very low BCE loss. Fix: disable negative sampling (`--neg-sample-n 0`) and set
+`ignore_presence=True` in inference. The identification stage (pHash / ArcFace) acts as the real
+presence filter — if the dewarped crop does not match any gallery card, the frame is discarded
+there.
+
+*External drive I/O bottleneck.* Loading 394k JPEG frames from a spinning external drive gave
+~4–7 batch/s and ~26 min/epoch. Pre-resizing all frames to 224×224 on a local SSD (`precache_dataset.py`)
+raised throughput to ~18 batch/s and ~5–6 min/epoch.
+
+*Ordered loss is an unnecessary constraint.* The SmoothL1 loss compared predicted corners against
+ground truth in a fixed TL/TR/BR/BL order. This means a card rotated 90° has a completely
+different "correct" answer, adding gradient noise and making 90°/270° augmentation awkward. See
+v0.2 for the fix.
+
+---
+
+### v0.2 — Dihedral-invariant loss + geometric corner sorting (corner_detector_tiny_cyclic_r90)
+
+**Motivation:**
+
+The v0.1 loss required the model to predict corners in a specific winding direction *and* a
+specific starting corner. This is an unnecessary constraint. The model's job is to locate four
+points; the labeling of which point is "top-left" is a post-processing detail that can be resolved
+geometrically at inference time.
+
+Forcing the model to learn both the corner locations *and* their canonical labeling under a single
+SmoothL1 loss creates two problems:
+
+1. **Gradient noise from equivalent configurations.** A card seen at 0° and the same card seen at
+   90° are geometrically equivalent, but the v0.1 loss assigns them different target vectors. The
+   model has to learn to output different orderings for the same physical arrangement, which wastes
+   capacity and slows convergence.
+
+2. **Augmentation brittleness.** A horizontal flip reverses the winding order of the corners
+   (clockwise becomes counter-clockwise). The v0.1 code compensated by swapping TL↔TR and BL↔BR
+   after each flip, but this assumed the ground-truth corners are always in canonical clockwise
+   order — which is only true if every label-generating step maintained that invariant. A silent
+   bug in any upstream step could corrupt labels silently.
+
+**Changes in v0.2:**
+
+*Loss — full dihedral invariance.* The corner loss now evaluates all 8 orderings in the dihedral
+group D4: the 4 cyclic rotations of the ground-truth quad, plus the 4 cyclic rotations of the
+reversed (mirror) quad. The per-sample loss is the minimum over all 8. The model has zero
+obligation to predict corners in any particular winding direction or starting position; it only
+needs to get the four locations right.
+
+```
+D4 orderings checked:
+  [0,1,2,3]  [1,2,3,0]  [2,3,0,1]  [3,0,1,2]   ← 4 cyclic (clockwise)
+  [3,2,1,0]  [0,3,2,1]  [1,0,3,2]  [2,1,0,3]   ← 4 cyclic (counter-clockwise)
+```
+
+*Augmentation — 90°/180°/270° rotations.* With an order-free loss, any rotation of the image
+just rotates the corner coordinates geometrically. No relabeling is needed. The augmentation now
+applies a random multiple of 90° (uniformly from {0°, 90°, 180°, 270°}) followed by a fine
+random rotation of ±30°. Combined with the existing horizontal flip, this gives the model exposure
+to cards in every orientation.
+
+*Inference — geometric corner sorting.* `predict.py` post-processes the 4 raw output points with
+`_sort_corners()`, which:
+
+1. Computes the centroid of the 4 predicted points.
+2. Sorts the points by angle relative to the centroid to get a consistent cyclic order.
+3. Rotates the sequence so the point with the smallest `x + y` (closest to the image origin) is
+   index 0.
+
+The result is always a clockwise TL→TR→BR→BL sequence, regardless of what order the model
+predicted internally.
+
+*Data quality — tighter pHash threshold.* Training frames are filtered to pHash distance ≤ 15
+(down from ≤ 20), reducing the training set from ~409k to ~316k frames. The removed frames are
+those where the SIFT homography's dewarped result matched the reference card only loosely —
+borderline matches where the corner labels may be unreliable.
+
+**Summary of changes:**
+
+| | v0.1 | v0.2 |
+|---|---|---|
+| Loss | SmoothL1, fixed corner order | Min-over-D4 SmoothL1 |
+| Augmentation | h-flip, ±30° rotation | h-flip, 90°/180°/270°, ±30° rotation |
+| Corner ordering at inference | As predicted by model | Geometric sort (centroid + angle) |
+| Training frames | ~409k (phash ≤ 20) | ~316k (phash ≤ 15) |
+| Epoch time | ~26 min (external drive) | ~5–6 min (SSD cache) |
+
+---
+
 ## Directory Structure
 
 ```

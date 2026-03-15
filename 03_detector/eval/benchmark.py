@@ -23,6 +23,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -59,6 +61,34 @@ class FrameResult(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
+# Result cache (deterministic detectors like Canny are cached by dataset hash)
+# ---------------------------------------------------------------------------
+
+def _dataset_hash(corners_csv: Path, split: str, limit: int | None) -> str:
+    key = f"{corners_csv}:{split}:{limit}"
+    return hashlib.md5(key.encode()).hexdigest()[:12]
+
+
+def _cache_path(cache_dir: Path, detector_name: str, dataset_hash: str) -> Path:
+    safe_name = detector_name.replace(" ", "_").replace("/", "_")
+    return cache_dir / f"{safe_name}__{dataset_hash}.json"
+
+
+def _save_cache(path: Path, results: list[FrameResult]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump([list(r) for r in results], f)
+
+
+def _load_cache(path: Path) -> list[FrameResult] | None:
+    if not path.exists():
+        return None
+    with open(path) as f:
+        raw = json.load(f)
+    return [FrameResult(*r) for r in raw]
+
+
+# ---------------------------------------------------------------------------
 # Evaluate one detector over a list of rows
 # ---------------------------------------------------------------------------
 
@@ -68,7 +98,18 @@ def evaluate_detector(
     data_dir: Path,
     catalog_root: Path,
     limit: int | None = None,
+    cache_dir: Path | None = None,
+    dataset_hash: str | None = None,
+    cacheable: bool = False,
 ) -> list[FrameResult]:
+    # Try cache first (only for deterministic detectors)
+    if cacheable and cache_dir is not None and dataset_hash is not None:
+        cp = _cache_path(cache_dir, detector.name, dataset_hash)
+        cached = _load_cache(cp)
+        if cached is not None:
+            print(f"  [{detector.name}] loaded {len(cached)} results from cache")
+            return cached
+
     results: list[FrameResult] = []
     eval_rows = rows[:limit] if limit else rows
 
@@ -115,6 +156,11 @@ def evaluate_detector(
             img_w=w,
             img_h=h,
         ))
+
+    if cacheable and cache_dir is not None and dataset_hash is not None:
+        cp = _cache_path(cache_dir, detector.name, dataset_hash)
+        _save_cache(cp, results)
+        print(f"  [{detector.name}] cached {len(results)} results → {cp.name}")
 
     return results
 
@@ -259,9 +305,21 @@ def run(args: argparse.Namespace) -> None:
         return
 
     # Evaluate
+    cache_dir = args.cache_dir
+    ds_hash = _dataset_hash(corners_csv, args.split, args.limit)
+    # Deterministic detectors whose results don't depend on a checkpoint
+    _CACHEABLE = {"canny", "cannypolydetector"}  # class names lowercased, no spaces
+
     table_rows = []
     for detector in detectors:
-        frame_results = evaluate_detector(detector, rows, data_dir, catalog_root, limit=args.limit)
+        is_cacheable = detector.name.lower().replace(" ", "") in _CACHEABLE
+        frame_results = evaluate_detector(
+            detector, rows, data_dir, catalog_root,
+            limit=args.limit,
+            cache_dir=cache_dir,
+            dataset_hash=ds_hash,
+            cacheable=is_cacheable,
+        )
         metrics = aggregate(frame_results)
         table_rows.append((detector.name, metrics))
         print(
@@ -329,6 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--split", choices=["val", "all"], default="val",
         help="Which data split to evaluate (default: val)",
+    )
+    p.add_argument(
+        "--cache-dir", type=Path,
+        default=Path(__file__).resolve().parents[1] / "eval" / "cache",
+        help="Directory for caching deterministic detector results (default: eval/cache/)",
     )
     return p
 

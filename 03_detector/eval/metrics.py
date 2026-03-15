@@ -10,6 +10,28 @@ _REF_W = 745
 _REF_H = 1040
 
 
+def _orient_short_edge_top(corners: np.ndarray, img_w: int, img_h: int) -> np.ndarray:
+    """Roll CW corners so the shortest edge (card width) is at position 0→1.
+
+    MTG cards are portrait (63×88mm); the short edges are top and bottom.
+    Placing the shortest edge first ensures portrait orientation regardless
+    of how the card is held in the frame.
+
+    Args:
+        corners: shape (4, 2), normalized [0, 1], CW order, any starting corner.
+        img_w:   image width in pixels (for correct aspect-aware lengths).
+        img_h:   image height in pixels.
+
+    Returns:
+        Reordered corners, shape (4, 2), shortest edge at index 0→1.
+    """
+    scale = np.array([img_w, img_h], dtype=np.float32)
+    pts = corners * scale  # pixel coords
+    edge_lens = [float(np.linalg.norm(pts[(i + 1) % 4] - pts[i])) for i in range(4)]
+    shortest = int(np.argmin(edge_lens))
+    return np.roll(corners, -shortest, axis=0)
+
+
 def dewarp_card(image: np.ndarray, corners: np.ndarray) -> np.ndarray | None:
     """Perspective-warp the detected card region to a flat _REF_W × _REF_H rectangle.
 
@@ -42,13 +64,12 @@ def phash_distance(
     """Compute pHash Hamming distance between dewarped prediction and Scryfall reference.
 
     Dewarp the predicted card region and compare its perceptual hash against
-    the reference PNG's hash.  A low distance (< 5) means the detected crop
-    closely resembles the reference card — a strong signal that both detection
-    and identification would succeed.
+    the reference PNG's hash.  Both the normal orientation and the 180° rotation
+    are tried; the minimum distance is returned to handle upside-down cards.
 
     Args:
         image:         Original HxWx3 uint8 BGR image.
-        pred_corners:  shape (4, 2), normalized [0, 1], TL/TR/BR/BL.
+        pred_corners:  shape (4, 2), normalized [0, 1], CW order.
         ref_img_path:  Path to Scryfall reference PNG for this card.
         hash_size:     pHash grid size (default 8 → 64-bit hash).
 
@@ -64,18 +85,27 @@ def phash_distance(
     if not ref_img_path.exists():
         return None
 
-    dewarped = dewarp_card(image, pred_corners)
-    if dewarped is None:
-        return None
-
-    # OpenCV uses BGR; PIL uses RGB
     import cv2
-    pred_pil = Image.fromarray(cv2.cvtColor(dewarped, cv2.COLOR_BGR2RGB))
+    h, w = image.shape[:2]
     ref_pil  = Image.open(ref_img_path).convert("RGB")
+    ref_hash = imagehash.phash(ref_pil, hash_size=hash_size)
 
-    pred_hash = imagehash.phash(pred_pil, hash_size=hash_size)
-    ref_hash  = imagehash.phash(ref_pil,  hash_size=hash_size)
-    return int(pred_hash - ref_hash)
+    # Orient so the shortest edge (card top/bottom) is at position 0→1, then
+    # try both 0° and 180° to resolve the top-vs-bottom ambiguity.
+    oriented = _orient_short_edge_top(pred_corners, w, h)
+    best_dist = None
+    for rot in [0, 2]:  # 0° and 180°
+        corners = np.roll(oriented, -rot, axis=0)
+        dewarped = dewarp_card(image, corners)
+        if dewarped is None:
+            continue
+        pred_pil  = Image.fromarray(cv2.cvtColor(dewarped, cv2.COLOR_BGR2RGB))
+        pred_hash = imagehash.phash(pred_pil, hash_size=hash_size)
+        dist = int(pred_hash - ref_hash)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+
+    return best_dist
 
 
 def corner_point_error(pred: np.ndarray, true: np.ndarray) -> float:

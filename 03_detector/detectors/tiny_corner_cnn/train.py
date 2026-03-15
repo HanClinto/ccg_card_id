@@ -69,6 +69,11 @@ def detection_loss(
 ) -> torch.Tensor:
     """Combined presence classification + corner regression loss.
 
+    Corner loss is cyclic-permutation-invariant: we compute SmoothL1 for all
+    4 cyclic rotations of the ground-truth corners and take the minimum.  This
+    means the model only needs to locate the 4 corners — not label them as
+    TL/TR/BR/BL — which allows 90°/180°/270° augmentation without reordering.
+
     Args:
         pred_corners:        (B, 8) sigmoid-activated corner predictions.
         pred_presence_logit: (B,)   raw presence logit (before sigmoid).
@@ -80,10 +85,24 @@ def detection_loss(
         Scalar loss tensor.
     """
     presence_loss = F.binary_cross_entropy_with_logits(pred_presence_logit, true_presence)
-    # Corner loss only on positive examples
     pos_mask = true_presence.bool()
     if pos_mask.any():
-        corner_loss = F.smooth_l1_loss(pred_corners[pos_mask], true_corners[pos_mask])
+        p = pred_corners[pos_mask].view(-1, 4, 2)   # (N, 4, 2)
+        t = true_corners[pos_mask].view(-1, 4, 2)   # (N, 4, 2)
+        # Per-sample loss for all 8 dihedral orderings of ground-truth corners:
+        # 4 cyclic rotations + 4 cyclic rotations of the reversed sequence.
+        # This makes the loss fully order-invariant — the model has no obligation
+        # to output any particular winding direction or starting corner.
+        t_fwd = t                    # clockwise
+        t_rev = t.flip(dims=[1])     # counter-clockwise
+        dihedral_losses = torch.stack([
+            F.smooth_l1_loss(p, torch.roll(t_fwd, shifts=s, dims=1), reduction="none").mean(dim=(1, 2))
+            for s in range(4)
+        ] + [
+            F.smooth_l1_loss(p, torch.roll(t_rev, shifts=s, dims=1), reduction="none").mean(dim=(1, 2))
+            for s in range(4)
+        ], dim=0)  # (8, N)
+        corner_loss = dihedral_losses.min(dim=0).values.mean()
     else:
         corner_loss = torch.tensor(0.0, device=pred_corners.device)
     return presence_loss + lambda_corners * corner_loss

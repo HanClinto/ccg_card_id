@@ -42,6 +42,25 @@ _PREPROCESS = transforms.Compose([
 ])
 
 
+def _sort_corners(corners: np.ndarray) -> np.ndarray:
+    """Sort 4 corners into clockwise order starting from the top-left.
+
+    Computes the centroid, sorts by angle (clockwise from top-left), then
+    rotates the sequence so the corner closest to the image origin (min x+y)
+    is first.  This gives a consistent TL→TR→BR→BL ordering regardless of
+    what order the model predicted the points in.
+    """
+    cx, cy = corners.mean(axis=0)
+    # atan2 gives counter-clockwise angles; negate for clockwise sort
+    # In image coords (y-down), ascending atan2 gives CW order: TL→TR→BR→BL
+    angles = np.arctan2(corners[:, 1] - cy, corners[:, 0] - cx)
+    corners = corners[np.argsort(angles)]          # CW order
+    # Rotate so the top-left corner (min x+y) is index 0
+    start = int(np.argmin(corners[:, 0] + corners[:, 1]))
+    corners = np.roll(corners, -start, axis=0)
+    return corners
+
+
 class NeuralCornerDetectorInference(CardDetector):
     """Inference wrapper around NeuralCornerDetector.
 
@@ -104,6 +123,7 @@ class NeuralCornerDetectorInference(CardDetector):
 
         corners_flat = pred_corners.squeeze().cpu().numpy()  # (8,)
         corners = np.clip(corners_flat, 0.0, 1.0).reshape(4, 2).astype(np.float32)
+        corners = _sort_corners(corners)
 
         if not self.ignore_presence and presence_prob < self.presence_threshold:
             return DetectionResult(
