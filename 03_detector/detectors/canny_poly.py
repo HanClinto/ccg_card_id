@@ -10,7 +10,7 @@ Algorithm:
   6. findContours → sort by area descending
   7. For each contour: convex hull → approxPolyDP (epsilon = 2% of perimeter)
      Accept if 4 points and area in [min_area_frac, max_area_frac] of image area
-  8. Order winning quad corners TL→TR→BR→BL
+  8. Sort corners into canonical order (CW, shortest edge at 0→1 — see base.py)
   9. Normalize to [0, 1] and return DetectionResult
 
 Works well on high-contrast bordered cards against plain backgrounds.
@@ -24,26 +24,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from base import CardDetector, DetectionResult
-
-
-def _order_corners(pts: np.ndarray) -> np.ndarray:
-    """Sort 4 points into TL, TR, BR, BL order.
-
-    Uses the standard sum/diff method:
-      - TL has smallest x+y sum
-      - BR has largest x+y sum
-      - TR has largest x-y diff
-      - BL has smallest x-y diff
-    """
-    pts = pts.reshape(4, 2).astype(np.float32)
-    s = pts.sum(axis=1)
-    d = np.diff(pts, axis=1).flatten()
-    tl = pts[np.argmin(s)]
-    br = pts[np.argmax(s)]
-    tr = pts[np.argmin(d)]
-    bl = pts[np.argmax(d)]
-    return np.array([tl, tr, br, bl], dtype=np.float32)
+from base import CardDetector, DetectionResult, sort_corners_canonical
 
 
 class CannyPolyDetector(CardDetector):
@@ -85,7 +66,9 @@ class CannyPolyDetector(CardDetector):
             gallery: Unused. Accepted for interface compatibility.
 
         Returns:
-            DetectionResult with normalized corners, or no_card() if no quad found.
+            DetectionResult with normalized corners in canonical order
+            (CW, shortest edge at 0→1 — see base.py convention),
+            or no_card() if no quad found.
         """
         h, w = image.shape[:2]
         image_area = float(h * w)
@@ -134,13 +117,11 @@ class CannyPolyDetector(CardDetector):
             if area < min_area or area > max_area:
                 continue
 
-            # Found our quad
+            # Found our quad — normalize then apply canonical sort
             pts = approx.reshape(4, 2).astype(np.float32)
-            ordered = _order_corners(pts)
-
-            # Step 9: normalize
             scale = np.array([w, h], dtype=np.float32)
-            normalized = np.clip(ordered / scale, 0.0, 1.0)
+            normalized = np.clip(pts / scale, 0.0, 1.0)
+            normalized = sort_corners_canonical(normalized, img_w=w, img_h=h)
 
             confidence = min(1.0, area / image_area)
 

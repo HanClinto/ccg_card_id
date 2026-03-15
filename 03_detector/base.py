@@ -1,16 +1,41 @@
 #!/usr/bin/env python3
-"""Base class and data types for card detection.
+"""Base class, data types, and shared utilities for card detection.
 
-A CardDetector takes a raw image and returns the four corner points of the
-most prominent card, plus a confidence score and presence flag.
+==========================================================================
+Corner convention — ALL detectors MUST follow this contract
+==========================================================================
 
-Corner ordering (clockwise from top-left):
-    corner 0 — Top-Left
-    corner 1 — Top-Right
-    corner 2 — Bottom-Right
-    corner 3 — Bottom-Left
+Every DetectionResult.corners array is a float32 (4, 2) in normalized image
+coordinates [0, 1] (x, y), ordered as follows:
 
-Coordinates are normalized to [0, 1] relative to image (width, height).
+    Winding:  CLOCKWISE
+    Index 0:  start of the SHORTEST edge of the quad
+    Index 1:  end   of the SHORTEST edge  (0 → 1 is the short "top" edge)
+    Index 2:  far corner
+    Index 3:  the remaining corner  (3 → 0 closes the short "bottom" edge)
+
+Rationale
+---------
+MTG cards are portrait (63 × 88 mm). The two shortest edges of the detected
+quad are the card's top and bottom; the two longest are the sides.  Placing
+the shortest edge first in CW order gives a stable, orientation-robust
+convention that does not depend on which direction is "up" in the image.
+
+                    0 ─────── 1
+                   /           \
+                  3             2
+                   \           /
+                    (implied)
+
+The 180° ambiguity (whether edge 0→1 is the physical card top or bottom) is
+intentionally left unresolved here.  Code that needs a definitive orientation
+(pHash matching, ArcFace embedding) should try BOTH the corners as-given AND
+the same corners rolled by 2 (a 180° rotation), then keep whichever gives the
+better match.
+
+Use sort_corners_canonical() to produce corners in this convention.
+
+==========================================================================
 """
 from __future__ import annotations
 
@@ -20,6 +45,53 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# Canonical corner sort
+# ---------------------------------------------------------------------------
+
+def sort_corners_canonical(corners: np.ndarray, img_w: int, img_h: int) -> np.ndarray:
+    """Sort 4 detected corners into the canonical CW / shortest-edge-first order.
+
+    Steps
+    -----
+    1. Compute the centroid; sort corners by atan2 angle ascending.
+       In image coordinates (y increases downward), ascending atan2 gives
+       clockwise order — TL→TR→BR→BL for an upright portrait card.
+    2. Compute the four edge lengths in *pixel* space (not normalized, to
+       avoid distortion from non-square images).
+    3. Roll the sequence so the shortest edge is at position 0→1.
+
+    The resulting array satisfies the corner convention documented at the
+    top of this module.  The 0°/180° orientation ambiguity is NOT resolved;
+    callers that need it should try both the returned corners and
+    ``np.roll(corners, -2, axis=0)`` and pick the better match.
+
+    Args:
+        corners: shape (4, 2), normalized [0, 1], any order.
+        img_w:   image width  in pixels — used for pixel-accurate edge lengths.
+        img_h:   image height in pixels.
+
+    Returns:
+        shape (4, 2) float32, canonical CW order, shortest edge at 0→1.
+    """
+    corners = np.asarray(corners, dtype=np.float32)
+    # Step 1 — clockwise sort via atan2
+    cx, cy = corners.mean(axis=0)
+    angles  = np.arctan2(corners[:, 1] - cy, corners[:, 0] - cx)
+    corners = corners[np.argsort(angles)]   # ascending atan2 = CW in image space
+
+    # Step 2/3 — find shortest edge in pixel space and roll it to front
+    scale    = np.array([img_w, img_h], dtype=np.float32)
+    pts      = corners * scale
+    edge_len = [float(np.linalg.norm(pts[(i + 1) % 4] - pts[i])) for i in range(4)]
+    shortest = int(np.argmin(edge_len))
+    return np.roll(corners, -shortest, axis=0)
+
+
+# ---------------------------------------------------------------------------
+# Detection result
+# ---------------------------------------------------------------------------
+
 @dataclass
 class DetectionResult:
     """Result of a single card detection attempt."""
@@ -28,7 +100,8 @@ class DetectionResult:
     """True if the detector believes a card is visible in the image."""
 
     corners: np.ndarray | None
-    """Shape (4, 2) float32, normalized [0, 1] (x, y).  TL, TR, BR, BL order.
+    """Shape (4, 2) float32, normalized [0, 1] (x, y).
+    Ordered per the corner convention above: CW, shortest edge at 0→1.
     None when card_present is False."""
 
     confidence: float = 0.0
@@ -49,8 +122,17 @@ class DetectionResult:
         return DetectionResult(card_present=False, corners=None, confidence=0.0)
 
 
+# ---------------------------------------------------------------------------
+# Abstract detector
+# ---------------------------------------------------------------------------
+
 class CardDetector(ABC):
-    """Abstract base class for all card detectors."""
+    """Abstract base class for all card detectors.
+
+    Subclasses MUST return corners in the canonical convention defined at the
+    top of this module (CW winding, shortest edge at index 0→1).
+    Use sort_corners_canonical() to produce conforming output.
+    """
 
     @abstractmethod
     def detect(self, image: np.ndarray, gallery=None) -> DetectionResult:
@@ -63,7 +145,8 @@ class CardDetector(ABC):
                      Pass None for detectors that don't require one.
 
         Returns:
-            DetectionResult with corners in normalized [0, 1] coordinates.
+            DetectionResult with corners in canonical normalized [0, 1]
+            coordinates (see module docstring for ordering contract).
         """
 
     @property

@@ -10,28 +10,6 @@ _REF_W = 745
 _REF_H = 1040
 
 
-def _orient_short_edge_top(corners: np.ndarray, img_w: int, img_h: int) -> np.ndarray:
-    """Roll CW corners so the shortest edge (card width) is at position 0→1.
-
-    MTG cards are portrait (63×88mm); the short edges are top and bottom.
-    Placing the shortest edge first ensures portrait orientation regardless
-    of how the card is held in the frame.
-
-    Args:
-        corners: shape (4, 2), normalized [0, 1], CW order, any starting corner.
-        img_w:   image width in pixels (for correct aspect-aware lengths).
-        img_h:   image height in pixels.
-
-    Returns:
-        Reordered corners, shape (4, 2), shortest edge at index 0→1.
-    """
-    scale = np.array([img_w, img_h], dtype=np.float32)
-    pts = corners * scale  # pixel coords
-    edge_lens = [float(np.linalg.norm(pts[(i + 1) % 4] - pts[i])) for i in range(4)]
-    shortest = int(np.argmin(edge_lens))
-    return np.roll(corners, -shortest, axis=0)
-
-
 def dewarp_card(image: np.ndarray, corners: np.ndarray) -> np.ndarray | None:
     """Perspective-warp the detected card region to a flat _REF_W × _REF_H rectangle.
 
@@ -86,16 +64,14 @@ def phash_distance(
         return None
 
     import cv2
-    h, w = image.shape[:2]
     ref_pil  = Image.open(ref_img_path).convert("RGB")
     ref_hash = imagehash.phash(ref_pil, hash_size=hash_size)
 
-    # Orient so the shortest edge (card top/bottom) is at position 0→1, then
-    # try both 0° and 180° to resolve the top-vs-bottom ambiguity.
-    oriented = _orient_short_edge_top(pred_corners, w, h)
+    # Corners arrive in canonical form (CW, shortest edge at 0→1 — see base.py).
+    # Try both 0° and 180° (roll by 2) to resolve the top-vs-bottom ambiguity.
     best_dist = None
-    for rot in [0, 2]:  # 0° and 180°
-        corners = np.roll(oriented, -rot, axis=0)
+    for rot in [0, 2]:
+        corners = np.roll(pred_corners, -rot, axis=0)
         dewarped = dewarp_card(image, corners)
         if dewarped is None:
             continue
@@ -109,21 +85,32 @@ def phash_distance(
 
 
 def corner_point_error(pred: np.ndarray, true: np.ndarray) -> float:
-    """Mean Euclidean distance between predicted and true corners (normalized units).
+    """Permutation-invariant mean corner error (minimum over 4 cyclic rotations).
+
+    Detectors output corners in canonical CW order with the shortest edge at
+    index 0→1 (see base.py).  Small prediction errors can cause the canonical
+    sort to pick a different starting corner than the ground truth, inflating a
+    naïve element-wise CPE.  Taking the minimum over all 4 cyclic rotations of
+    pred makes the metric robust to this one-position shift.
 
     Args:
         pred: shape (4, 2), normalized [0, 1] corner coordinates.
         true: shape (4, 2), normalized [0, 1] corner coordinates.
 
     Returns:
-        Mean distance across all 4 corners, in normalized units.
+        Minimum mean Euclidean distance across all 4 cyclic rotations of pred.
     """
-    # pred, true: shape (4, 2), normalized [0,1]
-    return float(np.mean(np.linalg.norm(pred - true, axis=1)))
+    return float(min(
+        np.mean(np.linalg.norm(np.roll(pred, -i, axis=0) - true, axis=1))
+        for i in range(4)
+    ))
 
 
 def pck(pred: np.ndarray, true: np.ndarray, threshold: float = 0.05) -> float:
-    """Percentage of Correct Keypoints within threshold of image diagonal (normalized).
+    """Percentage of Correct Keypoints within threshold (permutation-invariant).
+
+    Uses the same best-cyclic-rotation logic as corner_point_error to avoid
+    inflating error when canonical sort picks a different starting corner.
 
     threshold=0.05 means within 5% of the image diagonal.
 
@@ -135,9 +122,12 @@ def pck(pred: np.ndarray, true: np.ndarray, threshold: float = 0.05) -> float:
     Returns:
         Fraction in [0, 1] of corners within the threshold distance.
     """
-    dists = np.linalg.norm(pred - true, axis=1)  # (4,)
     diag = np.sqrt(2.0)   # normalized diagonal of a unit square
-    return float(np.mean(dists < threshold * diag))
+    best = 0.0
+    for i in range(4):
+        dists = np.linalg.norm(np.roll(pred, -i, axis=0) - true, axis=1)
+        best = max(best, float(np.mean(dists < threshold * diag)))
+    return best
 
 
 def quad_iou(pred_corners: np.ndarray, true_corners: np.ndarray, img_w: int, img_h: int) -> float:
