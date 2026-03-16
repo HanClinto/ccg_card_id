@@ -9,7 +9,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "04_build" / "mobilevit_xxs"))
+sys.path.insert(0, str(ROOT / "04_vectorize" / "mobilevit_xxs"))
 
 from ccg_card_id.config import cfg
 from retrieval import (  # type: ignore

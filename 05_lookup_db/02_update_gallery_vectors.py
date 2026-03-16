@@ -11,14 +11,14 @@ marked stale and recomputed.  If nothing has changed, this is a no-op.
 
 Run after:
   - 01_data_sources/scryfall/03_sync_images.py   (new card images available)
-  - 04_build/mobilevit_xxs/01_build_manifest.py  (manifest updated)
+  - 04_vectorize/mobilevit_xxs/01_build_manifest.py  (manifest updated)
   - A new training checkpoint has been saved
 
 Usage (run from project root):
-    python 05_build/02_update_gallery_vectors.py
-    python 05_build/02_update_gallery_vectors.py --checkpoint path/to/epoch_0090.pt
-    python 05_build/02_update_gallery_vectors.py --skip-arcface
-    python 05_build/02_update_gallery_vectors.py --rebuild
+    python 05_lookup_db/02_update_gallery_vectors.py
+    python 05_lookup_db/02_update_gallery_vectors.py --checkpoint path/to/epoch_0090.pt
+    python 05_lookup_db/02_update_gallery_vectors.py --skip-arcface
+    python 05_lookup_db/02_update_gallery_vectors.py --rebuild
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "04_build" / "mobilevit_xxs"))
+sys.path.insert(0, str(ROOT / "04_vectorize" / "mobilevit_xxs"))
 
 from ccg_card_id.config import cfg  # noqa: E402
 from retrieval import (  # noqa: E402  type: ignore
