@@ -74,3 +74,4 @@ References:
 
 For practical deployment details, see:
 - `docs/04_vectorize_part2_edge_deployment.md`
+- `docs/02_not_all_pixels_equal.md` (focus-aware/heatmap-aware embedding tutorial)
