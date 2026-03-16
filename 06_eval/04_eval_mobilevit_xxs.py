@@ -33,7 +33,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "04_build" / "mobilevit_xxs"))
+sys.path.insert(0, str(ROOT / "04_vectorize" / "mobilevit_xxs"))
 from ccg_card_id.config import cfg
 from reporting import (
     make_run_dir,
@@ -166,7 +166,7 @@ def main() -> None:
     if not args.manifest.exists():
         raise FileNotFoundError(
             f"Manifest not found: {args.manifest}\n"
-            "Build it with: python 04_build/mobilevit_xxs/01_build_manifest.py"
+            "Build it with: python 04_vectorize/mobilevit_xxs/01_build_manifest.py"
         )
 
     # Resolve checkpoints
