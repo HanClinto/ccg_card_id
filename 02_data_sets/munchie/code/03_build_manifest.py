@@ -3,7 +3,7 @@
 
 Reads resolved.jsonl (output of 02_resolve.py) and writes a manifest.csv
 with one row per usable image.  The manifest is compatible with the
-04_build/mobilevit_xxs training pipeline (same column layout, extended with
+04_vectorize/mobilevit_xxs training pipeline (same column layout, extended with
 illustration_id, oracle_id, lang, and source).
 
 Train/val/test split is assigned deterministically by illustration_id so

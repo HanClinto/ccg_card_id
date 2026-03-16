@@ -248,7 +248,7 @@ Tune these via the settings panel in the client.
 ## Gallery NPZ layout
 
 The server expects pre-computed gallery NPZ files built by the project's
-`05_build/` or `06_eval/` pipelines.
+`05_lookup_db/` or `06_eval/` pipelines.
 
 **pHash galleries** live at:
 ```

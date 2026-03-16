@@ -137,7 +137,7 @@ CREATE INDEX idx_frames_video ON frames(video_id);
 ```
 
 This database is the authoritative store. The manifest CSV for training is
-generated from it on demand by `05_build_manifest.py`.
+generated from it on demand by `05_lookup_db_manifest.py`.
 
 ---
 
@@ -191,7 +191,7 @@ Scripts are split into three stages:
     03_extract_frames.py  Extract clean I-frames; filter by blur score
     02_precompute_sift.py Pre-compute SIFT features for all cards in a set (cached)
     04_match_frames.py    Run SIFT homography; keep 4-corner matches; write to DB
-    05_build_manifest.py  Export manifest.csv + corners.csv from DB for training
+    05_lookup_db_manifest.py  Export manifest.csv + corners.csv from DB for training
 ```
 
 ### Typical workflow
@@ -221,7 +221,7 @@ python 02_data_sets/packopening/code/pipeline/02_precompute_sift.py --set-code l
 python 02_data_sets/packopening/code/pipeline/04_match_frames.py --slug <slug>
 
 # 7. Rebuild training manifest
-python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
+python 02_data_sets/packopening/code/pipeline/05_lookup_db_manifest.py
 ```
 
 ### Batch processing all pending videos
@@ -231,7 +231,7 @@ python 02_data_sets/packopening/code/pipeline/01_download.py --all
 python 02_data_sets/packopening/code/pipeline/03_extract_frames.py --all
 # (SIFT precompute per set as needed)
 python 02_data_sets/packopening/code/pipeline/04_match_frames.py --all
-python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
+python 02_data_sets/packopening/code/pipeline/05_lookup_db_manifest.py
 ```
 
 All scripts support resuming interrupted runs. Re-running a completed step is

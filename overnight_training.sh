@@ -45,7 +45,7 @@ fi
 # ---------------------------------------------------------------------------
 
 log "Starting single-task ArcFace resume (illustration_id, 15 epochs from e90)..."
-uv run python 04_build/mobilevit_xxs/02_train.py \
+python 04_build/mobilevit_xxs/02_train.py \
   --label-field illustration_id \
   --lr 2e-3 \
   --epochs 15 \
@@ -68,7 +68,7 @@ if [ ! -f "$SEED_CKPT" ]; then
 fi
 
 log "Starting multitask ArcFace from scratch (illustration_id + set_code, seeded from $SEED_CKPT)..."
-uv run python 04_build/mobilevit_xxs/03_train_multitask.py \
+python 04_build/mobilevit_xxs/03_train_multitask.py \
   --label-fields illustration_id set_code \
   --lr 2e-3 \
   --epochs 15 \
@@ -85,7 +85,7 @@ log "Multitask ArcFace complete."
 # ---------------------------------------------------------------------------
 
 log "Resuming corner detector training (100 more epochs from last.pt)..."
-uv run python 03_detector/detectors/tiny_corner_cnn/train.py \
+python 03_detector/detectors/tiny_corner_cnn/train.py \
   --train-source packopening \
   --epochs 100 \
   --batch-size 64 \

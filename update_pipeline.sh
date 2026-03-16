@@ -76,7 +76,7 @@ fi
 if [ "$SKIP_GALLERY" = false ]; then
   echo ""
   echo "=== Step 7: Recompute gallery embeddings ==="
-  uv run python 05_build/02_update_gallery_vectors.py
+  uv run python 05_lookup_db/02_update_gallery_vectors.py
 else
   echo ""
   echo "=== Step 7: Recompute gallery embeddings (SKIPPED) ==="

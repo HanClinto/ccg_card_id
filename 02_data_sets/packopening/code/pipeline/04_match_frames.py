@@ -684,7 +684,7 @@ def main() -> None:
 
     print(f"\nTotal matched frames: {total_matched}")
     if total_matched:
-        print("Next: python 02_data_sets/packopening/code/pipeline/05_build_manifest.py")
+        print("Next: python 02_data_sets/packopening/code/pipeline/05_lookup_db_manifest.py")
 
 
 if __name__ == "__main__":

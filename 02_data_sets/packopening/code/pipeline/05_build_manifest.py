@@ -7,9 +7,9 @@ corners.csv  — Corner coordinates on original frames (for dewarping model trai
 Written to: datasets/packopening/manifest.csv and corners.csv
 
 Usage (run from project root):
-    python 02_data_sets/packopening/code/pipeline/05_build_manifest.py
-    python 02_data_sets/packopening/code/pipeline/05_build_manifest.py --set-codes lea,leg
-    python 02_data_sets/packopening/code/pipeline/05_build_manifest.py --video-id dQw4w9WgXcQ
+    python 02_data_sets/packopening/code/pipeline/05_lookup_db_manifest.py
+    python 02_data_sets/packopening/code/pipeline/05_lookup_db_manifest.py --set-codes lea,leg
+    python 02_data_sets/packopening/code/pipeline/05_lookup_db_manifest.py --video-id dQw4w9WgXcQ
 """
 from __future__ import annotations
 

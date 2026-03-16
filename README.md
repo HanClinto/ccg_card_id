@@ -27,23 +27,22 @@ In this way, we can run the full pipeline of scripts on a nightly basis, and onl
 03_detector/        # Card detection in images
 
 04_vectorize/       # Convert card images to vectors
-  ├── phash/        # Perceptual hash baseline
-  ├── dinov2/       # DINOv2 transformer model
-  └── brief/        # BRIEF descriptor
+  ├── phash/            # Perceptual hash baseline
+  ├── dinov2/           # DINOv2 transformer model
+  ├── brief/            # BRIEF descriptor
+  └── mobilevit_xxs/    # MobileViT-XXS metric-learning training + eval utilities
 
-05_build/           # Build vector databases
+05_lookup_db/       # Lookup-db staging (currently mostly placeholder)
 
 06_eval/            # Evaluation and benchmarking
   └── 01_eval_retrieval.py  # Retrieval performance evaluation
-
-04_build/
-  └── mobilevit_xxs/   # MobileViT-XXS metric-learning training + eval utilities
-      ├── 01_build_manifest.py
-      ├── 02_build_triplets.py
-      ├── 03_train_arcface.py
-      ├── 04_eval_retrieval.py
-      └── README.md
 ```
+
+## Start Here
+
+- New contributor overview: `docs/00_welcome.md`
+- MobileViT analysis snapshot: `docs/mobilevit_xxs_analysis_2026-03-16.md`
+- Embedding research survey: `docs/embedding-model-survey.md`
 
 ## Configuration
 
