@@ -75,7 +75,7 @@ def detection_loss(
     TL/TR/BR/BL — which allows 90°/180°/270° augmentation without reordering.
 
     Args:
-        pred_corners:        (B, 8) sigmoid-activated corner predictions.
+        pred_corners:        (B, 8) raw linear corner predictions.
         pred_presence_logit: (B,)   raw presence logit (before sigmoid).
         true_corners:        (B, 8) ground-truth corners (zeros for negatives).
         true_presence:       (B,)   binary float label (1.0 = card present).

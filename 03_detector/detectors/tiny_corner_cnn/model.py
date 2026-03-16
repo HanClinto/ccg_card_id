@@ -22,8 +22,10 @@ MobileViTCornerDetector  (ablation / accuracy ceiling)
   the table, but overkill for production deployment.
 
 Both models share the same interface:
-  forward(x) → (corners: (B,8) sigmoid, presence_logit: (B,) raw)
-  corners are TL, TR, BR, BL in normalized [0,1] (x,y) order.
+  forward(x) → (corners: (B,8) raw linear, presence_logit: (B,) raw)
+  corners are TL, TR, BR, BL, raw unbounded values clamped to [0,1] at inference.
+  Linear output (no sigmoid) avoids the saturation/shrinkage bias that sigmoid
+  introduces near image-edge corner positions.
 
 Loss (same for both):
   L = BCEWithLogitsLoss(presence) + λ * SmoothL1Loss(corners[positives only])
@@ -70,7 +72,7 @@ class TinyCornerCNN(nn.Module):
     """46K-parameter depthwise-separable CNN for card corner regression.
 
     Input : (B, 3, 224, 224) float32, ImageNet-normalized.
-    Output: corners  (B, 8)  — sigmoid, TL/TR/BR/BL (x,y) in [0, 1]
+    Output: corners  (B, 8)  — raw linear, TL/TR/BR/BL (x,y), clamp to [0,1] at inference
             presence (B,)    — raw logit (apply sigmoid for probability)
 
     ~0.2 MB fp32 / ~40 KB int8. Runs at ≈3 ms on a modern laptop CPU;
@@ -103,7 +105,7 @@ class TinyCornerCNN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         out = self.head(self.pool(self.encoder(x)))
-        return torch.sigmoid(out[:, :8]), out[:, 8]
+        return out[:, :8], out[:, 8]
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +143,7 @@ class MobileViTCornerDetector(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         feats = self.backbone(x)
         out   = self.head(feats)
-        return torch.sigmoid(out[:, :8]), out[:, 8]
+        return out[:, :8], out[:, 8]
 
     def load_card_id_checkpoint(self, ckpt_path: Path | str) -> None:
         """Seed backbone from a card-ID ArcFace checkpoint (backbone.* keys only)."""
