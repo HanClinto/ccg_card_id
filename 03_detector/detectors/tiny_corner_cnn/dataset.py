@@ -343,14 +343,6 @@ class CornerDataset(Dataset):
     ) -> tuple[Image.Image, np.ndarray | None]:
         import torchvision.transforms.functional as TF
 
-        # Random horizontal flip — mirror x coordinates only.  No corner
-        # reordering needed: the dihedral loss handles all winding directions.
-        if random.random() < 0.5:
-            img = TF.hflip(img)
-            if corners is not None:
-                corners = corners.copy()
-                corners[:, 0] = 1.0 - corners[:, 0]
-
         # Random 90°/180°/270° rotation (25% chance each, 25% chance no rotation)
         k = random.randint(0, 3)
         if k > 0:
