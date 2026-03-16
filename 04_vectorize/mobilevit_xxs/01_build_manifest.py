@@ -15,7 +15,7 @@ Input:
 Output:
   <data_dir>/mobilevit_xxs/artwork_id_manifest.csv
 
-Run 01_build_manifest.py from 04_build/mobilevit_xxs/ after:
+Run 01_build_manifest.py from 04_vectorize/mobilevit_xxs/ after:
   - Scryfall images are downloaded and manifest.csv exists
   - 02_data_sets/munchie/code/03_build_manifest.py has been run
 """

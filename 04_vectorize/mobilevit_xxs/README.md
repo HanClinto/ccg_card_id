@@ -2,6 +2,17 @@
 
 Metric-learning pipeline for CCG card identification using MobileViT-XXS + ArcFace loss.
 
+> New here? Read `../README.md` first for the one-shot/edge-device problem framing.
+
+### Why ArcFace here (brief)
+
+We use ArcFace as the default training objective because it usually gives more stable identity-style separation than naive triplet setups unless triplet mining is very carefully tuned. For this project (many visually similar cards, edge inference constraints), that stability has been worth it.
+
+References:
+- ArcFace: https://arxiv.org/abs/1801.07698
+- FaceNet (Triplet): https://arxiv.org/abs/1503.03832
+- Batch-hard triplet practice: https://arxiv.org/abs/1703.07737
+
 ---
 
 ## Scripts
