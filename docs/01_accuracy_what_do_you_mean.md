@@ -18,9 +18,10 @@ In card scanning, people might crae about any number of things when they ask abo
 
 1. **Can it identify the card name?**
 2. **Can it identify the edition/printing?** (harder for subtle reprints)
-3. **Can it identify card condition?**
-4. **Can it detect counterfeit cards?**
-5. **Can it distinguish physical instances?**
+3. **Can it identify the card language?**
+4. **Can it identify card condition?**
+5. **Can it detect counterfeit cards?**
+6. **Can it distinguish physical instances?**
    - e.g., “Is this the same exact Beta Island copy I owned before?”
 
 The last one is a bit extreme, but they each hve their uses, and all five are valid. 

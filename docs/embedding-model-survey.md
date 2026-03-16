@@ -1,71 +1,144 @@
 # Neural Embedding Survey for One-Shot Card Identification
 
-This is a practical reading list + playbook focused on **instance-level visual retrieval** (very close to the card-ID problem).
+This is a practical reading list + playbook focused on **instance-level visual retrieval** for card scanning.
 
-## What tends to work well
+If you felt earlier references were old: fair point. This update emphasizes **ViT-era embedding work (2023+)** and how it maps to this project.
 
-### 1) Metric learning with strong mining and large batches
-- **ArcFace (additive angular margin)** — great identity separation with stable training.
-  - https://arxiv.org/abs/1801.07698
-- **Proxy Anchor Loss** — easier optimization for retrieval than pair/triplet-only objectives.
-  - https://arxiv.org/abs/2003.13911
-- **Supervised Contrastive Learning (SupCon)** — robust embeddings when labels are reliable.
-  - https://arxiv.org/abs/2004.11362
+---
 
-Why it helps here: many cards are near-duplicates. Angular-margin + hard negatives gives cleaner decision boundaries.
+## TL;DR (what changed in recent years)
 
-### 2) Hard-negative sampling is not optional
-- Sample negatives that share artwork/theme/layout but differ true card_id/edition.
-- Keep mining active throughout training, not only at startup.
+Recent progress is less about “invent one new loss” and more about:
+1. **better ViT pretraining recipes** (SSL and VLM)
+2. **stronger curated data pipelines**
+3. **scaling laws + compute-efficient tuning**
+4. **embedding flexibility at deployment time** (e.g., variable dimensions)
 
-Related retrieval literature:
-- In Defense of the Triplet Loss for Person Re-Identification (batch-hard mining)
-  - https://arxiv.org/abs/1703.07737
+For this repo, that means: keep ArcFace fine-tuning, but initialize from stronger ViT features and evaluate hard-split robustness, not just easy-set top-1.
 
-### 3) Domain-specific augmentations
-- Perspective warp, sleeve glare, camera noise, blur, compression, background clutter.
-- If training crops are too clean, deployment mismatch will dominate.
+---
 
-### 4) Two-stage retrieval often beats pure embedding-only systems
-- Stage A: fast ANN over embeddings (top-k candidates)
-- Stage B: rerank using extra cues (OCR text, set symbol classifier, corner metadata)
+## Recent ViT embedding directions worth studying
 
-Reference pattern (industry-scale visual search):
-- DeepFashion retrieval (landmark + retrieval ideas)
-  - https://arxiv.org/abs/1605.01354
+## 1) DINOv2 (2023) — robust all-purpose visual features
+- Paper: **Learning Robust Visual Features without Supervision**
+  - https://arxiv.org/abs/2304.07193
+- Why relevant:
+  - Strong frozen features across many tasks
+  - Emphasizes curated large-scale data and stable ViT SSL training
+- Practical use here:
+  - Excellent backbone/init candidate for card embedding fine-tuning
+  - Good baseline for "frozen encoder + light projection head"
 
-## What often does NOT work (or disappoints)
+## 2) I-JEPA (2023) — semantic predictive SSL for ViTs
+- Paper: **Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture**
+  - https://arxiv.org/abs/2301.08243
+- Why relevant:
+  - Learns semantic representations without heavy handcrafted augmentations
+  - Predictive joint-embedding objective may transfer well to retrieval
+- Practical use here:
+  - Useful conceptual alternative to contrastive-only pretraining
 
-1. **Only random negatives**
-   - model looks good on easy eval, fails on confusing editions.
+## 3) SigLIP (2023) — better pairwise contrastive behavior for vision-language embeddings
+- Paper: **Sigmoid Loss for Language Image Pre-Training**
+  - https://arxiv.org/abs/2303.15343
+- Why relevant:
+  - Pairwise sigmoid loss decouples from global softmax normalization
+  - Often strong embedding quality with scalable training
+- Practical use here:
+  - Strong open-weight embedding candidates for initialization (via SigLIP-family checkpoints)
 
-2. **Single-objective training for multi-objective problem**
-   - illustration-only labels won't give strong edition discrimination.
+## 4) EVA-CLIP (2023) — improved CLIP-scale training recipes
+- Paper: **Improved Training Techniques for CLIP at Scale**
+  - https://arxiv.org/abs/2303.15389
+- Why relevant:
+  - Recipe-level gains (optimization/augmentation/training strategy)
+  - Shows how much performance is recipe+data, not just architecture
+- Practical use here:
+  - Borrow recipe ideas when training custom ViT embedding pipelines
 
-3. **Small backbone + small embedding + no reranking**
-   - compact and fast, but may throw away tiny distinguishing cues.
+## 5) DataComp (2023) — data curation matters as much as model details
+- Paper: **In search of the next generation of multimodal datasets**
+  - https://arxiv.org/abs/2304.14108
+- Why relevant:
+  - Systematically studies dataset construction impact for CLIP-like training
+- Practical use here:
+  - Reinforces our need for careful hard-case dataset curation and split design
 
-4. **Benchmarking mostly on easy splits**
-   - can hide failure modes until late.
+## 6) Matryoshka Representation Learning (MRL)
+- Paper: **Matryoshka Representation Learning**
+  - https://arxiv.org/abs/2205.13147
+- Why relevant:
+  - One model supports multiple embedding sizes at inference
+  - Great fit for edge constraints (Pi/mobile/browser)
+- Practical use here:
+  - Consider variable-dimension embeddings (e.g., 32/64/128) from one trained model
 
-5. **Assuming pretrained features transfer perfectly**
-   - generic ImageNet-style pretraining helps but does not solve instance-level card distinctions by itself.
+---
 
-## Practical recommendations for this repo
+## Still-useful “older” foundations (keep, don’t discard)
 
-1. Keep MobileViT-XXS as a speed baseline, but add at least one stronger backbone lane for comparison.
-2. Add explicit same-artwork/different-edition hard negatives.
-3. Evaluate with a fixed hard split (e.g., cluttered backgrounds) as the primary model-selection metric.
-4. Add reranking stage (OCR/set-symbol/collector-number) for top-20 candidates.
-5. Log calibration curves and nearest-neighbor confusion groups, not just top-k.
+These are older but still operationally important:
+- ArcFace: https://arxiv.org/abs/1801.07698
+- Proxy Anchor: https://arxiv.org/abs/2003.13911
+- SupCon: https://arxiv.org/abs/2004.11362
+- Triplet mining practice: https://arxiv.org/abs/1703.07737
 
-## Additional useful references
+Reason: your downstream problem is **fine-grained instance retrieval**, where these objectives remain strong and interpretable.
 
-- FaceNet (classic metric learning baseline)
-  - https://arxiv.org/abs/1503.03832
-- SimCLR (contrastive pretraining ideas)
-  - https://arxiv.org/abs/2002.05709
-- CLIP (zero-shot embedding transfer; useful baseline, usually not enough alone for fine print-level IDs)
-  - https://arxiv.org/abs/2103.00020
-- Image retrieval with DELG (local + global descriptors)
-  - https://arxiv.org/abs/2001.05027
+---
+
+## What tends to work for custom ViT embedding models
+
+1. Start from a strong pretrained ViT encoder (DINOv2 / SigLIP-family / CLIP-family)
+2. Add task-specific embedding head + metric objective (ArcFace or SupCon/Proxy variants)
+3. Mine hard negatives (same artwork, different edition)
+4. Train with realistic capture augmentations (glare/warp/compression/background)
+5. Select models on hard-split metrics (not easy-set saturation)
+6. Deploy with compact embeddings + exact-search or shortlist+rereank strategy
+
+---
+
+## What still fails in practice
+
+1. Random negatives only
+2. Selecting by easy validation only
+3. Assuming generic foundation embedding is enough for edition-level disambiguation
+4. Ignoring deployment-time memory/latency (especially for 1GB Pi target)
+
+---
+
+## Recommended experiment matrix for this repo (ViT-focused)
+
+Run a small, disciplined matrix first:
+
+- **Backbone/init:**
+  - MobileViT-XXS baseline
+  - DINOv2-small frozen + train head
+  - DINOv2-small full/partial fine-tune
+
+- **Objective:**
+  - ArcFace
+  - SupCon
+
+- **Embedding dim:**
+  - 64, 128
+
+- **Eval:**
+  - Name ID + Edition ID
+  - Include `solring` stress test + cluttered background split
+  - Report p50/p95 latency + memory on target hardware
+
+Pick winner by **edition accuracy on hard split per millisecond per MB**, not by one aggregate score.
+
+---
+
+## Bottom line
+
+You’re right to push toward newer ViT literature. The modern edge is:
+- better pretrained ViT features,
+- better data curation,
+- better evaluation discipline,
+- and deployment-aware embeddings.
+
+ArcFace vs Triplet is still useful, but now it should be framed as the *fine-tuning layer* on top of stronger ViT-era representation foundations.

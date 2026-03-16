@@ -38,3 +38,5 @@ On difficult real-world sets (e.g. cluttered backgrounds), higher-bit pHash base
 - Evaluation runner: `06_eval/04_eval_mobilevit_xxs.py`
 - Latest analysis snapshot: `docs/mobilevit_xxs_analysis_2026-03-16.md`
 - Research notes: `docs/embedding-model-survey.md`
+- Focus-aware embedding tutorial: `docs/02_not_all_pixels_equal.md`
+- Multi-task + backbone shortlist (includes dataset/augmentation assumptions): `docs/03_multitask_curriculum_and_backbone_shortlist.md`
