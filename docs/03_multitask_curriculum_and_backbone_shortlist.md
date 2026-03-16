@@ -207,6 +207,8 @@ Training source assumptions:
   - **Fast SSD cache** (small, faster): `cfg.fast_data_dir`
 - Prefer keeping active training images (`packopening/aligned_448`) in fast SSD cache when space allows.
 - Resized cache folders must include explicit size suffixes (e.g., `aligned_448`, `aligned_320`) to avoid ambiguous names like plain `aligned`.
+- Apply pHash quality filtering for packopening training rows to suppress bad matches.
+  - Starting range: **max phash_dist 10–15** (default initial setting: 15).
 
 Augmentation assumptions:
 - Use **light augmentation** only (data is already real-camera and noisy).
