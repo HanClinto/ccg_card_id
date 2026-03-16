@@ -231,3 +231,13 @@ models/
 results/
 *.npz
 *.pkl
+
+# Claude Code memory (local AI assistant state — not project code)
+.claude/
+
+# Debug render directories (generated during development, not source)
+debug_renders/
+debug_renders_224/
+
+# Personal scratch notes
+notes.md
