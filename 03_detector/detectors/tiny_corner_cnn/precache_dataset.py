@@ -35,7 +35,7 @@ sys.path.insert(0, str(_DETECTOR_DIR))
 from ccg_card_id.config import cfg
 from dataset import load_from_packopening_db
 
-INPUT_SIZE = 224
+INPUT_SIZE = 448
 JPEG_QUALITY = 90
 
 

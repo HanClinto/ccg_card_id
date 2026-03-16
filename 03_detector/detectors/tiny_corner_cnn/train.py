@@ -47,7 +47,7 @@ from ccg_card_id.config import cfg
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from model import TinyCornerCNN, MobileViTCornerDetector   # noqa: E402
+from model import TinyCornerCNN, MobileViTCornerDetector, make_gaussian_heatmaps   # noqa: E402
 from dataset import (  # noqa: E402
     CornerDataset,
     load_from_packopening_db,
@@ -63,49 +63,56 @@ from dataset import (  # noqa: E402
 def detection_loss(
     pred_corners: torch.Tensor,
     pred_presence_logit: torch.Tensor,
+    pred_heatmaps: torch.Tensor | None,
     true_corners: torch.Tensor,
     true_presence: torch.Tensor,
     lambda_corners: float = 5.0,
+    lambda_heatmap: float = 10.0,
+    heatmap_sigma: float = 2.0,
 ) -> torch.Tensor:
-    """Combined presence classification + corner regression loss.
+    """Combined presence + corner regression + heatmap auxiliary loss.
 
-    Corner loss is cyclic-permutation-invariant: we compute SmoothL1 for all
-    4 cyclic rotations of the ground-truth corners and take the minimum.  This
-    means the model only needs to locate the 4 corners — not label them as
-    TL/TR/BR/BL — which allows 90°/180°/270° augmentation without reordering.
+    Corners are supervised in canonical TL→TR→BR→BL order (no permutation
+    invariance needed — the dataset ensures canonical GT order, and
+    augmentation re-sorts after flips/rotations).
 
     Args:
-        pred_corners:        (B, 8) raw linear corner predictions.
-        pred_presence_logit: (B,)   raw presence logit (before sigmoid).
-        true_corners:        (B, 8) ground-truth corners (zeros for negatives).
+        pred_corners:        (B, 8) soft-argmax corner coords from heatmaps.
+        pred_presence_logit: (B,)   raw presence logit.
+        pred_heatmaps:       (B, 4, H, W) raw corner heatmap logits, or None
+                             for MobileViTCornerDetector which uses direct regression.
+        true_corners:        (B, 8) GT corners in canonical order (zeros for negatives).
         true_presence:       (B,)   binary float label (1.0 = card present).
-        lambda_corners:      Weight on corner regression term.
+        lambda_corners:      Weight on coordinate regression term (default 5.0).
+        lambda_heatmap:      Weight on heatmap auxiliary term (default 10.0).
+        heatmap_sigma:       Gaussian sigma for heatmap targets in heatmap pixels (default 2.0).
 
     Returns:
         Scalar loss tensor.
     """
     presence_loss = F.binary_cross_entropy_with_logits(pred_presence_logit, true_presence)
     pos_mask = true_presence.bool()
+
+    corner_loss  = torch.tensor(0.0, device=pred_corners.device)
+    heatmap_loss = torch.tensor(0.0, device=pred_corners.device)
+
     if pos_mask.any():
-        p = pred_corners[pos_mask].view(-1, 4, 2)   # (N, 4, 2)
-        t = true_corners[pos_mask].view(-1, 4, 2)   # (N, 4, 2)
-        # Per-sample loss for all 8 dihedral orderings of ground-truth corners:
-        # 4 cyclic rotations + 4 cyclic rotations of the reversed sequence.
-        # This makes the loss fully order-invariant — the model has no obligation
-        # to output any particular winding direction or starting corner.
-        t_fwd = t                    # clockwise
-        t_rev = t.flip(dims=[1])     # counter-clockwise
-        dihedral_losses = torch.stack([
-            F.smooth_l1_loss(p, torch.roll(t_fwd, shifts=s, dims=1), reduction="none").mean(dim=(1, 2))
-            for s in range(4)
-        ] + [
-            F.smooth_l1_loss(p, torch.roll(t_rev, shifts=s, dims=1), reduction="none").mean(dim=(1, 2))
-            for s in range(4)
-        ], dim=0)  # (8, N)
-        corner_loss = dihedral_losses.min(dim=0).values.mean()
-    else:
-        corner_loss = torch.tensor(0.0, device=pred_corners.device)
-    return presence_loss + lambda_corners * corner_loss
+        p = pred_corners[pos_mask]   # (N, 8)
+        t = true_corners[pos_mask]   # (N, 8)
+        corner_loss = F.smooth_l1_loss(p, t)
+
+        if pred_heatmaps is not None:
+            hm_pred = pred_heatmaps[pos_mask]                        # (N, 4, H, W)
+            t_4x2   = t.view(-1, 4, 2)
+            hm_gt   = make_gaussian_heatmaps(
+                t_4x2,
+                H=hm_pred.shape[2],
+                W=hm_pred.shape[3],
+                sigma=heatmap_sigma,
+            ).to(pred_corners.device)                                # (N, 4, H, W)
+            heatmap_loss = F.binary_cross_entropy_with_logits(hm_pred, hm_gt)
+
+    return presence_loss + lambda_corners * corner_loss + lambda_heatmap * heatmap_loss
 
 
 # ---------------------------------------------------------------------------
@@ -260,9 +267,12 @@ def run(args: argparse.Namespace) -> None:
             presence = batch["card_present"].to(device)
             corners  = batch["corners"].to(device)
 
-            pred_corners, pred_presence = model(images)
+            out = model(images)
+            pred_corners, pred_presence = out[0], out[1]
+            pred_heatmaps = out[2] if len(out) == 3 else None
             loss = detection_loss(
-                pred_corners, pred_presence, corners, presence, args.lambda_corners
+                pred_corners, pred_presence, pred_heatmaps, corners, presence,
+                args.lambda_corners, args.lambda_heatmap,
             )
 
             optim.zero_grad(set_to_none=True)
@@ -291,9 +301,12 @@ def run(args: argparse.Namespace) -> None:
                 presence = batch["card_present"].to(device)
                 corners  = batch["corners"].to(device)
 
-                pred_corners, pred_presence = model(images)
+                out = model(images)
+                pred_corners, pred_presence = out[0], out[1]
+                pred_heatmaps = out[2] if len(out) == 3 else None
                 loss = detection_loss(
-                    pred_corners, pred_presence, corners, presence, args.lambda_corners
+                    pred_corners, pred_presence, pred_heatmaps, corners, presence,
+                    args.lambda_corners, args.lambda_heatmap,
                 )
                 val_loss_sum += loss.item() * images.shape[0]
                 n_val        += images.shape[0]
@@ -324,7 +337,8 @@ def run(args: argparse.Namespace) -> None:
                     images   = batch["image"].to(device)
                     presence = batch["card_present"].to(device)
                     corners  = batch["corners"].to(device)
-                    pc, pp = model(images)
+                    t_out = model(images)
+                    pc, pp = t_out[0], t_out[1]
                     t_pc.append(pc.cpu()); t_tc.append(corners.cpu())
                     t_pp.append(pp.cpu()); t_tp.append(presence.cpu())
             t_pc_all = torch.cat(t_pc); t_tc_all = torch.cat(t_tc)
@@ -426,6 +440,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--lambda-corners", type=float, default=5.0,
         help="Weight on corner regression loss (default: 5.0)",
+    )
+    p.add_argument(
+        "--lambda-heatmap", type=float, default=10.0,
+        help="Weight on heatmap auxiliary loss (default: 10.0)",
     )
     p.add_argument(
         "--checkpoint-every", type=int, default=5,

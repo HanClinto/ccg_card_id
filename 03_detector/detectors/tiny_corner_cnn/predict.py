@@ -33,7 +33,7 @@ _ARCH_MAP = {"tiny": TinyCornerCNN, "mobilevit": MobileViTCornerDetector}
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD  = [0.229, 0.224, 0.225]
-INPUT_SIZE     = 224
+INPUT_SIZE     = 448
 
 _PREPROCESS = transforms.Compose([
     transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
@@ -99,7 +99,12 @@ class NeuralCornerDetectorInference(CardDetector):
         tensor = _PREPROCESS(img_rgb).unsqueeze(0).to(self.device)  # (1, 3, 224, 224)
 
         with torch.no_grad():
-            pred_corners, pred_presence_logit = self.model(tensor)
+            out = self.model(tensor)
+
+        # TinyCornerCNN returns (corners, presence, heatmaps); MobileViT returns (corners, presence)
+        pred_corners          = out[0]
+        pred_presence_logit   = out[1]
+        heatmaps              = out[2] if len(out) == 3 else None
 
         presence_prob = float(torch.sigmoid(pred_presence_logit).squeeze())
 
@@ -108,19 +113,29 @@ class NeuralCornerDetectorInference(CardDetector):
         h, w = image.shape[:2]
         corners = sort_corners_canonical(corners, img_w=w, img_h=h)
 
+        # Per-corner confidence from heatmap peak values (TinyCornerCNN only)
+        corner_confidences = None
+        if heatmaps is not None:
+            peak_logits = heatmaps.squeeze(0).amax(dim=(-2, -1))  # (4,)
+            corner_confidences = torch.sigmoid(peak_logits).cpu().numpy().tolist()
+
         if not self.ignore_presence and presence_prob < self.presence_threshold:
             return DetectionResult(
                 card_present=False,
                 corners=None,
                 confidence=presence_prob,
-                metadata={"presence_prob": presence_prob},
+                metadata={"presence_prob": presence_prob, "corner_confidences": None},
             )
 
         return DetectionResult(
             card_present=True,
             corners=corners,
             confidence=presence_prob,
-            metadata={"presence_prob": presence_prob, "epoch": self._epoch},
+            metadata={
+                "presence_prob": presence_prob,
+                "epoch": self._epoch,
+                "corner_confidences": corner_confidences,
+            },
         )
 
     def __repr__(self) -> str:

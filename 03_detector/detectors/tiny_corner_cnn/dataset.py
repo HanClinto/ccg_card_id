@@ -35,7 +35,8 @@ from __future__ import annotations
 import csv
 import random
 import sqlite3
-from pathlib import Path
+import sys
+from pathlib import Path as _Path
 
 import numpy as np
 import torch
@@ -43,9 +44,16 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
+_DETECTOR_DIR = _Path(__file__).resolve().parents[2]
+if str(_DETECTOR_DIR) not in sys.path:
+    sys.path.insert(0, str(_DETECTOR_DIR))
+from base import sort_corners_canonical
+
+from pathlib import Path
+
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD  = [0.229, 0.224, 0.225]
-INPUT_SIZE     = 224
+INPUT_SIZE     = 448
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +364,13 @@ class CornerDataset(Dataset):
             img = TF.rotate(img, angle, expand=False)
             if corners is not None:
                 corners = _rotate_corners(corners, angle, cx=0.5, cy=0.5)
+
+        # Restore canonical corner order (TL→TR→BR→BL) after augmentation.
+        # This ensures the direct per-channel loss in training always sees
+        # consistently ordered corners regardless of flip/rotation applied.
+        if corners is not None:
+            w, h = img.size  # PIL (width, height) — 448×448 after resize
+            corners = sort_corners_canonical(corners, img_w=w, img_h=h)
 
         return img, corners
 
