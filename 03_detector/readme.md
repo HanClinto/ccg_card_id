@@ -16,10 +16,10 @@ corner coordinates of the most prominent card. A homography warp is then applied
 flat, rectangular card image at a standard aspect ratio. This step compensates for perspective,
 rotation, and moderate amounts of shear introduced by off-angle captures.
 
-**Stage 2 — Identify** (see `04_build/` and `06_eval/`). The dewarped card image is passed to the
-ArcFace metric-learning model, which embeds it into a 128-dimensional vector and performs nearest-
-neighbour lookup against a gallery of ~108k Scryfall reference embeddings. The closest match is
-the card identity.
+**Stage 2 — Identify** (see `04_build/` and `06_eval/`). The dewarped card image is passed to
+whatever embedding model is used (whether pHash or ArcFace), which embeds it into an n-dimensional
+vector for nearest-neighbor lookup against a gallery of ~108k Scryfall reference embeddings. The 
+closest match is the card identity.
 
 The two stages are deliberately separate. Detection is a geometric problem (where is the card?),
 while identification is a semantic one (which card is it?). Keeping them separate makes each
@@ -31,7 +31,9 @@ component easier to evaluate, replace, and improve independently.
 
 For clean studio shots — white background, good lighting, a single bordered card placed flat — the
 problem is almost trivial. A simple Canny edge detector finds the rectangular outline and you are
-done. Real-world captures are far less cooperative.
+done. However, this requires card scanning to be done against a plain (usually white) background
+without anything touching the edges of the cards. This is often inconvenient, and it would be nice
+to be able to scan against noiser backgrounds, or with cards held in a hand.
 
 **Borderless and full-bleed art.** Modern Magic sets (especially Universes Beyond prints, showcase
 frames, and many commander products) extend the artwork all the way to the card edge. There is no
@@ -60,7 +62,9 @@ area threshold, causing the card to be missed entirely.
 
 **Multiple cards in frame.** Pack opening videos, draft picks, and collection sorting all place
 multiple cards in frame simultaneously. The detector needs to find the "primary" card (usually the
-most prominent or most central) reliably.
+most prominent or most central) reliably. It would be possible to build a detector that can find
+multiple cards at the same time, but for our purposes, we will be focusing on the use-case of
+finding only the single-most prominent card in the frame at a time.
 
 The bottom line is that classical Canny/polygon detection is useful as a fast baseline on
 controlled captures, but breaks down badly in the conditions that actually matter. The neural
@@ -144,76 +148,126 @@ before you can look for it. In practice this detector is used as a ground-truth 
 pipeline) rather than as a deployment detector. When `gallery=None` is passed, the detector
 immediately returns `card_present=False`.
 
+Thus, the SIFT homography detector is primarily used for building a ground-truth dataset useful
+for training and evaluating the neural detectors, rather than a production detector itself.
+
 Requires `opencv-contrib-python` or `opencv-contrib-python-headless` for SIFT.
 
-### NeuralCornerDetector
+### NeuralCornerDetector (TinyCornerCNN)
 
 A learned detector that takes any image and predicts corners directly, with no gallery required.
 
-**Architecture**: MobileViT-XXS backbone (the same one used in the card identification model in
-`04_build/`) followed by a regression head. The backbone produces a 384-dimensional feature vector
-via global average pooling. The head is:
+**Architecture**: TinyCornerCNN — a purpose-built ~48K-parameter depthwise-separable CNN. It does
+**not** use the MobileViT backbone. The encoder consists of four stride-2 depthwise-separable
+blocks, reducing a 448×448 input to 28×28 feature maps (stride-16 total, 128 channels). This
+spatial map is kept intact and fed to two heads:
 
 ```
-LayerNorm(384) → Linear(384, 256) → GELU → Dropout(0.3) → Linear(256, 9)
+Input: (B, 3, 448, 448)
+
+Encoder (stride-16, 4× stride-2):
+  Conv2d(3→16, s=2) → DW-Sep(16→32, s=2) → DW-Sep(32→64, s=2)
+  → DW-Sep(64→64, s=1) → DW-Sep(64→128, s=2) → DW-Sep(128→128, s=1)
+  → (B, 128, 28, 28)
+
+Corner head:
+  Conv2d(128→32, 1×1) → BN → ReLU6 → Dropout2d → Conv2d(32→4, 1×1)
+  → (B, 4, 28, 28) heatmaps (one per corner: TL, TR, BR, BL)
+  → soft-argmax → (B, 8) corner coordinates
+
+Presence head:
+  AdaptiveAvgPool2d(1) → Flatten → Linear(128→1) → (B,) logit
 ```
 
-The 9 output logits are split: the first 8 pass through sigmoid to produce 4 corner `(x, y)`
-pairs, and the ninth is a raw card-presence logit (apply sigmoid for the probability).
+**Heatmap regression with soft-argmax**: Rather than compressing the spatial feature map to a
+vector and regressing coordinates directly (which loses spatial precision), the model outputs a
+4-channel spatial heatmap. One channel per corner, at 28×28 resolution. The predicted corner
+coordinate is the softmax-weighted average of the spatial grid positions — a fully differentiable
+operation. This preserves spatial precision all the way to the output, and handles occlusion
+naturally: an occluded corner produces a low-confidence, diffuse heatmap peak rather than a
+confident wrong prediction.
 
-**Loss**: Two terms. A BCE loss on the presence logit (applied to all frames, including negatives)
-and a SmoothL1 regression loss on the corner predictions (applied only to positive frames where a
-card is present). The corner loss is weighted by `lambda_corners=5.0`.
+**Per-corner confidence**: Available from the peak value of each heatmap channel after sigmoid:
+`sigmoid(heatmaps).amax(dim=(-2,-1))` → 4-element vector of confidence scores per corner.
 
-**Transfer learning**: Because the card-ID model and the detection model share the same backbone,
-the detection model can be seeded from a pre-trained card-ID checkpoint. The backbone has already
-learned to extract rich card-related features; the detection head then only needs to learn the
-regression mapping. In practice this substantially reduces the number of epochs needed to reach a
-good result. Pass `--seed-checkpoint` at training time.
+**Loss**: Three terms, applied per-batch:
 
-**Strengths**: Handles all the difficult cases (borderless art, foil, sleeves, clutter) once
-trained. No gallery required. Single forward pass. Runs well on MPS/GPU.
+- `BCEWithLogitsLoss` on the presence logit (all frames including negatives)
+- `SmoothL1Loss` on corner coordinates from soft-argmax (positives only), weight `λ_c = 5.0`
+- `BCEWithLogitsLoss` on raw heatmap logits vs Gaussian blob targets at GT corner positions
+  (positives only), weight `λ_h = 10.0`, sigma = 2.0 heatmap pixels (~32px at input scale)
 
-**Weaknesses**: Requires training data and a GPU for practical training. Currently trained only on
-`clint_cards_with_backgrounds` (1,267 frames) — small by neural-network standards. Performance
-will improve substantially as more labeled data is added from the packopening pipeline.
+The Gaussian heatmap loss provides dense spatial supervision that guides the model toward localized
+peaks, complementing the coordinate regression loss.
+
+**Strengths**: Handles all the difficult cases (borderless art, foil, sleeves, clutter, partial
+occlusion) once trained. No gallery required. Single forward pass. Runs well on MPS/GPU. The
+heatmap architecture gives ~16px spatial precision at 448×448 input — substantially better than
+global regression approaches at the same parameter count.
+
+**Weaknesses**: Requires training data and a GPU for practical training. Requires a pre-built
+cache of 448×448 images for practical training throughput (see `precache_dataset.py`).
 
 ---
 
 ## Training Data
 
-The primary labeled dataset is `corners.csv`, located at:
+### Packopening DB (primary training source)
+
+Training data comes exclusively from the packopening pipeline:
+
+```
+datasets/packopening/packopening.db
+```
+
+The database stores SIFT-verified corner labels for frames extracted from hundreds of pack-opening
+videos on YouTube. Every row in the `frames` table is a frame where SIFT homography successfully
+matched a known card reference, producing reliable normalized corner coordinates. The dataset
+contains ~409k such labeled frames across ~768 videos, covering a wide range of card sets,
+lighting conditions, camera angles, and card conditions.
+
+Labels are filtered by **pHash distance** (Hamming distance between the dewarped frame's pHash and
+the Scryfall reference image pHash). Low pHash distance confirms that the SIFT homography matched
+the right card and the corners are trustworthy. Training uses frames with `phash_dist ≤ 20`, which
+retains ~89% of frames (~340k) while excluding borderline matches where labels may be unreliable.
+
+Negative examples (frames where no card was visible) are sampled from videos in
+`frames_extracted` status — videos that had frames extracted but no SIFT matches found. These
+provide realistic "no card present" examples drawn from the same video domain as the positives.
+
+The packopening domain closely mirrors the `clint_backgrounds` evaluation domain: both are
+handheld captures from video, with similar card orientations, lighting variation, and background
+clutter. This domain alignment is the main reason packopening was chosen as the training source
+rather than more controlled datasets.
+
+### clint_cards_with_backgrounds (test set only — never used in training)
 
 ```
 datasets/clint_cards_with_backgrounds/data/04_data/corners.csv
 ```
 
-This file contains 1,267 rows, each one a phone-video frame from the
-`clint_cards_with_backgrounds` dataset. Each row stores the `img_path` (relative to `cfg.data_dir`),
-`card_id`, and the four normalized corner coordinates produced by the SIFT homography detector.
-Since SIFT was used to generate these labels, they are highly accurate where available — the SIFT
-pipeline requires a minimum of 20 good feature matches and a geometric consistency check before
-accepting a result.
+This 1,271-frame dataset is held out exclusively as a **test set** for domain-generalization
+evaluation. It is never included in training or validation splits. Using it for training would
+leak test information and make evaluation results meaningless. See the Evaluation section for how
+it is used.
 
-Negative examples (frames where SIFT failed or no card is present) live in:
+### Augmentation
 
-```
-datasets/clint_cards_with_backgrounds/data/04_data/bad/
-```
+The `CornerDataset` class applies the following augmentations during training:
 
-There are 62 such frames. They are used as hard negatives during training (the model should output
-`card_present=False` for these).
+- **90°/180°/270° rotation** (75% chance each training pass) — covers all card orientations
+- **Fine rotation ±30°** (50% chance) — simulates angled captures
+- **Color jitter** (brightness/contrast/saturation/hue) — lighting variation
+- **Random grayscale** (5% chance) — partial grayscale robustness
+- **Gaussian blur** (20% chance) — slight defocus robustness
 
-The training split is small (roughly 1,000 positives plus 62 negatives), so augmentation is
-critical. The `CornerDataset` class applies random horizontal flips, rotations up to ±30°, color
-jitter, random grayscale, and Gaussian blur. Spatial augmentations update the corner coordinates
-alongside the image, so labels stay correct.
+Cards are not horizontally flipped. Flipping would produce mirror-image text and artwork that
+does not exist in the real world and would train the model on physically impossible examples.
 
-The packopening pipeline (see `02_data_sets/packopening/`) processes hundreds of pack opening
-videos and will eventually yield tens of thousands of additional labeled frames. Once the neural
-detector is accurate enough to bootstrap its own labels (predict corners, verify with SIFT on easy
-frames, propagate to hard frames), this dataset can grow quickly. That bootstrapping loop is
-planned but not yet implemented.
+All spatial augmentations update the corner coordinates alongside the image. After each spatial
+augmentation, corners are re-sorted into canonical TL→TR→BR→BL order via `sort_corners_canonical`,
+so the heatmap channel assignments (channel 0 = TL, 1 = TR, 2 = BR, 3 = BL) remain consistent
+regardless of what rotation was applied.
 
 ---
 
@@ -245,6 +299,41 @@ card is present would score 1.0 here.
 
 ---
 
+## Evaluation Datasets
+
+Two datasets are used for evaluation. They represent complementary points on the difficulty spectrum.
+
+### Sol Ring (best-case / Canny baseline)
+
+307 frames extracted from pack-opening or scanning videos, all showing Sol Ring editions against
+a plain white or near-white background. Cards are fully visible with no occlusion, held flat, and
+well-lit. These conditions are as close to ideal as real-world captures get.
+
+This is the **best-case scenario for the Canny detector**: high-contrast card borders against a
+clean background make edge detection trivial. Canny performs near its ceiling here. Any neural
+model must match or exceed Canny on this dataset to be considered production-worthy — failing on
+easy cases is unacceptable even if hard cases improve.
+
+### Clint Backgrounds (worst-case / neural model target)
+
+1,271 frames from phone video, covering 39 different cards held in hands against a variety of
+highly-colored, cluttered backgrounds. The dataset includes:
+
+- **Partial finger occlusion** — one or more corners are partially covered by the holder's fingers
+- **Borderless and full-art cards** — the artwork extends to the card edge, leaving no border for
+  edge detectors to grip
+- **Highly varied backgrounds** — colored playmats, wooden tables, other cards, dark surfaces
+- **Perspective and rotation** — cards tilted or at moderate angles
+
+This is the **worst-case scenario for the Canny detector** and the **primary target for the neural
+model**. Canny's performance degrades substantially here. This is the domain the neural model is
+designed to handle, and where improvements matter most in practice.
+
+The domain of clint_backgrounds closely matches the packopening training domain: both involve
+handheld cards from video with similar capture conditions. The key difference is that clint is held
+out completely from training — it is used only for evaluation, giving an honest estimate of
+generalization to real-world conditions the model has never seen during training.
+
 ## Running the Benchmark
 
 ```bash
@@ -268,6 +357,10 @@ python 03_detector/eval/benchmark.py --limit 20
 # Override data directory
 python 03_detector/eval/benchmark.py \
     --data-dir /Volumes/carbonite/claw/data/ccg_card_id
+
+# Two-stage evaluation (stage 1 rough detection → crop → stage 2 refinement)
+python 03_detector/eval/two_stage_test.py \
+    --checkpoint /path/to/last.pt --split all
 ```
 
 Expected output format:
@@ -357,7 +450,7 @@ v0.2 for the fix.
 
 ---
 
-### v0.2 — Dihedral-invariant loss + geometric corner sorting (corner_detector_tiny_cyclic_r90)
+### v0.2 — Dihedral-invariant loss + geometric corner sorting
 
 **Motivation:**
 
@@ -375,48 +468,23 @@ SmoothL1 loss creates two problems:
    capacity and slows convergence.
 
 2. **Augmentation brittleness.** A horizontal flip reverses the winding order of the corners
-   (clockwise becomes counter-clockwise). The v0.1 code compensated by swapping TL↔TR and BL↔BR
-   after each flip, but this assumed the ground-truth corners are always in canonical clockwise
-   order — which is only true if every label-generating step maintained that invariant. A silent
-   bug in any upstream step could corrupt labels silently.
+   (clockwise becomes counter-clockwise). Compensating in augmentation code requires every
+   label-generating step to maintain a canonical clockwise order — a silent violation anywhere
+   silently corrupts labels.
 
 **Changes in v0.2:**
 
-*Loss — full dihedral invariance.* The corner loss now evaluates all 8 orderings in the dihedral
-group D4: the 4 cyclic rotations of the ground-truth quad, plus the 4 cyclic rotations of the
-reversed (mirror) quad. The per-sample loss is the minimum over all 8. The model has zero
-obligation to predict corners in any particular winding direction or starting position; it only
-needs to get the four locations right.
+*Loss — full dihedral invariance.* The corner loss evaluates all 8 orderings in D4 (4 cyclic
+rotations of the ground-truth quad, plus 4 cyclic rotations of the reversed quad) and uses the
+minimum. The model only needs to locate four points correctly.
 
-```
-D4 orderings checked:
-  [0,1,2,3]  [1,2,3,0]  [2,3,0,1]  [3,0,1,2]   ← 4 cyclic (clockwise)
-  [3,2,1,0]  [0,3,2,1]  [1,0,3,2]  [2,1,0,3]   ← 4 cyclic (counter-clockwise)
-```
+*Augmentation — 90°/180°/270° rotations.* Applied a random multiple of 90° followed by a fine
+random rotation of ±30°. Combined with horizontal flip, the model sees cards in every orientation.
 
-*Augmentation — 90°/180°/270° rotations.* With an order-free loss, any rotation of the image
-just rotates the corner coordinates geometrically. No relabeling is needed. The augmentation now
-applies a random multiple of 90° (uniformly from {0°, 90°, 180°, 270°}) followed by a fine
-random rotation of ±30°. Combined with the existing horizontal flip, this gives the model exposure
-to cards in every orientation.
+*Inference — geometric corner sorting.* Predicted corners are sorted by centroid-relative angle
+and rotated so the smallest `x + y` point is index 0, giving TL→TR→BR→BL always.
 
-*Inference — geometric corner sorting.* `predict.py` post-processes the 4 raw output points with
-`_sort_corners()`, which:
-
-1. Computes the centroid of the 4 predicted points.
-2. Sorts the points by angle relative to the centroid to get a consistent cyclic order.
-3. Rotates the sequence so the point with the smallest `x + y` (closest to the image origin) is
-   index 0.
-
-The result is always a clockwise TL→TR→BR→BL sequence, regardless of what order the model
-predicted internally.
-
-*Data quality — tighter pHash threshold.* Training frames are filtered to pHash distance ≤ 15
-(down from ≤ 20), reducing the training set from ~409k to ~316k frames. The removed frames are
-those where the SIFT homography's dewarped result matched the reference card only loosely —
-borderline matches where the corner labels may be unreliable.
-
-**Summary of changes:**
+**Summary:**
 
 | | v0.1 | v0.2 |
 |---|---|---|
@@ -425,6 +493,59 @@ borderline matches where the corner labels may be unreliable.
 | Corner ordering at inference | As predicted by model | Geometric sort (centroid + angle) |
 | Training frames | ~409k (phash ≤ 20) | ~316k (phash ≤ 15) |
 | Epoch time | ~26 min (external drive) | ~5–6 min (SSD cache) |
+
+---
+
+### v0.3 — Heatmap architecture, 448×448 input, canonical corner order (current)
+
+**Motivation:**
+
+v0.1 and v0.2 both used Global Average Pooling after the encoder, compressing the 28×28 spatial
+feature map to a 128-dimensional vector before regressing corner coordinates. This was the primary
+bottleneck: all spatial information had to be encoded into 128 numbers, making precise corner
+localization fundamentally difficult regardless of how many training epochs were run.
+
+Additionally, horizontal flip augmentation was producing unrealistic training examples. MTG cards
+are asymmetric — text, mana symbols, and artwork all have a natural orientation. A flipped card
+image does not exist in the real world.
+
+**Changes in v0.3:**
+
+*Architecture — heatmap head replaces global regression.* The encoder output (28×28 at 448×448
+input) feeds a 1×1 conv head that produces a 4-channel heatmap (one channel per corner). Soft-
+argmax extracts differentiable (x, y) coordinates as the softmax-weighted mean of the spatial
+grid. An auxiliary Gaussian BCE loss supervises the raw heatmap logits against Gaussian blob
+targets at GT corner positions, providing dense spatial guidance.
+
+*Input resolution — 224×224 → 448×448.* Doubling the input resolution doubles the effective
+spatial resolution of the 28×28 feature maps at zero architectural cost. The 224×224 SSD cache
+was deleted and rebuilt at 448×448.
+
+*Augmentation — horizontal flip removed.* Flipping cards produces mirror-image text and artwork
+that does not exist in the real world. The model should not train on physically impossible
+examples.
+
+*Loss — canonical order replaces dihedral invariance.* With heatmap channels fixed to specific
+corners (channel 0 = TL, 1 = TR, 2 = BR, 3 = BL), the direct SmoothL1 loss on channel-matched
+coordinates is correct and sufficient. Dihedral D4 permutation search is no longer needed.
+After each spatial augmentation, `sort_corners_canonical` re-assigns corners to channels, keeping
+channel assignments consistent.
+
+**Summary:**
+
+| | v0.2 | v0.3 |
+|---|---|---|
+| Input resolution | 224×224 | 448×448 |
+| Architecture | Encoder → GAP → Linear(128→8+1) | Encoder → heatmap head → soft-argmax |
+| Corner output | Direct regression (8 values) | Soft-argmax from 4-channel heatmap |
+| Spatial precision | ~16px (after GAP: unlimited drift) | ~16px grid (28×28 at 448 input) |
+| Heatmap aux loss | No | BCEWithLogitsLoss vs Gaussian targets, λ=10.0 |
+| Occlusion handling | Confident wrong prediction | Diffuse heatmap peak (low confidence) |
+| Loss | Min-over-D4 SmoothL1 | Direct SmoothL1 on canonical order |
+| Augmentation | h-flip, 90°/180°/270°, ±30° | 90°/180°/270°, ±30° (no h-flip) |
+| Per-corner confidence | No | sigmoid(heatmaps).amax(dim=(-2,-1)) |
+| Parameters | ~44K | ~48K |
+| Epoch time | ~5–6 min (224 SSD cache) | ~23 min (448 SSD cache) |
 
 ---
 
@@ -441,13 +562,19 @@ borderline matches where the corner labels may be unreliable.
     sift_homography.py          SIFT feature-matching wrapper
     tiny_corner_cnn/
       __init__.py               Package marker
-      model.py                  NeuralCornerDetector (MobileViT-XXS + regression head)
-      dataset.py                CornerDataset + load_dataset
+      model.py                  TinyCornerCNN (heatmap head + soft-argmax) + make_gaussian_heatmaps
+      dataset.py                CornerDataset + load_from_packopening_db + load_clint_as_test
       train.py                  Training script (argparse, AdamW, cosine LR, checkpoints)
       predict.py                Inference wrapper implementing CardDetector ABC
+      precache_dataset.py       Pre-resize all training frames to 448×448 on local SSD
 
   eval/
     __init__.py                 Package marker
-    metrics.py                  CPE, PCK, IoU, exact polygon IoU
+    metrics.py                  CPE, PCK, IoU, exact polygon IoU, pHash distance
     benchmark.py                Evaluation harness (loads data, runs detectors, prints table)
+    two_stage_test.py           Two-stage eval: full-image detect → crop → refine
+    visualize_corners.py        Overlay predicted vs GT corners on sample images
+
+  tests/
+    test_geometry.py            Unit tests for coordinate conventions and sort_corners_canonical
 ```
