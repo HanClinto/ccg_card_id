@@ -300,7 +300,11 @@ class CornerDataset(Dataset):
             # Use fast cache if available, fall back to original
             from_cache = False
             if self.fast_data_dir is not None:
-                cached = self.fast_data_dir / rel
+                # Cache stores frames at frames_448/ (size-explicit) rather than frames/
+                fast_rel = rel.replace(
+                    "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+                )
+                cached = self.fast_data_dir / fast_rel
                 if cached.exists():
                     img_path = cached
                     from_cache = True

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Pre-cache packopening training frames as resized 224×224 JPEGs on local fast storage.
+"""Pre-cache packopening training frames as resized 448×448 JPEGs on local fast storage.
 
 Reading 340k individual JPEG frames from an external drive per training epoch is the
 main bottleneck for TinyCornerCNN training.  This script copies every frame that will
-be used for training (positive + sampled negatives) to cfg.fast_data_dir at 224×224,
-which fits in ~3–4 GB on local SSD and loads ~10–20× faster per epoch.
+be used for training (positive + sampled negatives) to cfg.fast_data_dir at 448×448,
+which fits in ~12–15 GB on local SSD and loads ~10–20× faster per epoch.
 
-The cache mirrors the original relative path structure exactly:
-    fast_data_dir / datasets / packopening / frames / {slug} / {frame}.jpg
+The cache uses a size-suffixed path to distinguish it from the source frames:
+    fast_data_dir / datasets / packopening / frames_448 / {slug} / {frame}.jpg
 
 The dataset loader checks for a cached copy first and falls back to the original.
 
@@ -40,7 +40,7 @@ JPEG_QUALITY = 90
 
 
 def cache_one(src: Path, dst: Path) -> bool:
-    """Resize src image to 224×224 and save as JPEG at dst. Returns True on success."""
+    """Resize src image to 448×448 and save as JPEG at dst. Returns True on success."""
     if dst.exists():
         return True  # already cached
     img = cv2.imread(str(src))
@@ -56,7 +56,7 @@ def cache_one(src: Path, dst: Path) -> bool:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Pre-cache packopening frames at 224×224")
+    p = argparse.ArgumentParser(description="Pre-cache packopening frames at 448×448")
     p.add_argument("--data-dir",       type=Path, default=cfg.data_dir)
     p.add_argument("--fast-data-dir",  type=Path, default=cfg.fast_data_dir)
     p.add_argument("--packopening-db", type=Path,
@@ -82,11 +82,15 @@ def main() -> None:
     all_rows = train_rows + val_rows
     print(f"Total frames to cache: {len(all_rows):,}")
 
-    # Build (src, dst) pairs — skip already-cached files
+    # Build (src, dst) pairs — skip already-cached files.
+    # Cache path uses frames_448/ instead of frames/ to make the resolution explicit.
     pairs: list[tuple[Path, Path]] = []
     for row in all_rows:
-        src = data_dir      / row["img_path"]
-        dst = fast_data_dir / row["img_path"]
+        src     = data_dir / row["img_path"]
+        dst_rel = row["img_path"].replace(
+            "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+        )
+        dst = fast_data_dir / dst_rel
         if not dst.exists():
             pairs.append((src, dst))
 
@@ -110,9 +114,13 @@ def main() -> None:
 
     # Estimate cache size
     total_bytes = sum(
-        (fast_data_dir / row["img_path"]).stat().st_size
+        (fast_data_dir / row["img_path"].replace(
+            "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+        )).stat().st_size
         for row in all_rows[:1000]
-        if (fast_data_dir / row["img_path"]).exists()
+        if (fast_data_dir / row["img_path"].replace(
+            "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+        )).exists()
     )
     avg_kb = total_bytes / min(1000, len(all_rows)) / 1024
     est_gb = avg_kb * len(all_rows) / 1024 / 1024

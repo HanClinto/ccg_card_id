@@ -194,6 +194,11 @@ def main() -> None:
     card_to_illus = _build_card_to_illustration(args.manifest)
 
     # Remap gallery paths to local SSD cache if available (precache_gallery.py caches as .jpg).
+    # Cache dirs carry explicit resolution suffixes: front_224, fronts_224.
+    _FAST_REMAP = [
+        ("catalog/scryfall/images/png/front/", "catalog/scryfall/images/png/front_224/"),
+        ("datasets/munchie/images/fronts/",    "datasets/munchie/images/fronts_224/"),
+    ]
     if args.fast_data_dir and args.fast_data_dir.exists():
         data_dir_root = cfg.data_dir
         remapped: list[Path] = []
@@ -203,7 +208,12 @@ def main() -> None:
                 rel = p.relative_to(data_dir_root) if p.is_absolute() else p
             except ValueError:
                 rel = p
-            fast = (args.fast_data_dir / rel).with_suffix(".jpg")
+            rel_str = str(rel)
+            for old, new in _FAST_REMAP:
+                if rel_str.startswith(old):
+                    rel_str = rel_str.replace(old, new, 1)
+                    break
+            fast = (args.fast_data_dir / rel_str).with_suffix(".jpg")
             if fast.exists():
                 remapped.append(fast)
                 n_fast += 1

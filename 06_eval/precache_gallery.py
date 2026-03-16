@@ -6,8 +6,9 @@ Reading 81k Scryfall PNGs from an external drive per eval run is the main bottle
 for ArcFace gallery embedding computation.  This script copies every image listed in
 the gallery manifest to cfg.fast_data_dir at 224×224, which loads 10–20× faster.
 
-The cache uses the original relative path structure but replaces the extension with .jpg:
-    fast_data_dir / catalog/scryfall/images/png/front/{a}/{b}/{uuid}.jpg
+The cache uses a size-suffixed path and replaces the extension with .jpg:
+    fast_data_dir / catalog/scryfall/images/png/front_224/{a}/{b}/{uuid}.jpg
+    fast_data_dir / datasets/munchie/images/fronts_224/{filename}.jpg
 
 The eval script checks for the cached JPEG first and falls back to the original PNG.
 
@@ -78,13 +79,22 @@ def main() -> None:
 
     print(f"Unique images in manifest: {len(image_paths):,}")
 
-    # Build (src, dst) pairs — dst replaces extension with .jpg
+    # Build (src, dst) pairs — dst replaces extension with .jpg and uses size-suffixed dirs.
+    _FAST_REMAP = [
+        ("catalog/scryfall/images/png/front/", "catalog/scryfall/images/png/front_224/"),
+        ("datasets/munchie/images/fronts/",    "datasets/munchie/images/fronts_224/"),
+    ]
     pairs: list[tuple[Path, Path]] = []
     for rel in image_paths:
         # Manifest may use absolute or relative paths
         src = rel if rel.is_absolute() else data_dir / rel
         rel_from_data = rel.relative_to(data_dir) if rel.is_absolute() else rel
-        dst = (fast_data_dir / rel_from_data).with_suffix(".jpg")
+        rel_str = str(rel_from_data)
+        for old, new in _FAST_REMAP:
+            if rel_str.startswith(old):
+                rel_str = rel_str.replace(old, new, 1)
+                break
+        dst = (fast_data_dir / rel_str).with_suffix(".jpg")
         if not dst.exists():
             pairs.append((src, dst))
 
