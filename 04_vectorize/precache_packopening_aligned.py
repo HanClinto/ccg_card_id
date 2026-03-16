@@ -115,8 +115,9 @@ def main() -> None:
     data_dir = args.data_dir
     fast_data_dir = args.fast_data_dir
     max_phash_dist = None if args.max_phash_dist is not None and args.max_phash_dist < 0 else args.max_phash_dist
+    ph_tag = "all" if max_phash_dist is None else f"ph{max_phash_dist}"
     out_manifest = args.out_manifest or (
-        fast_data_dir / "datasets" / "packopening" / f"manifest_aligned_{args.size}.csv"
+        fast_data_dir / "datasets" / "packopening" / f"manifest_aligned_{args.size}_{ph_tag}.csv"
     )
 
     print(f"Source manifest : {manifest}")

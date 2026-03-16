@@ -41,7 +41,7 @@ During training, use `--run-tag` without epoch; append epoch in reports.
 ## Step 0 — Ensure cached 448 manifest exists
 
 Expected output from precache step:
-- `FAST/datasets/packopening/manifest_aligned_448.csv`
+- `FAST/datasets/packopening/manifest_aligned_448_ph15.csv`
 
 Where `FAST` is `cfg.fast_data_dir`.
 
@@ -66,7 +66,7 @@ All runs below use the same manifest + backbone + image size.
 
 ```bash
 ./.venv312/bin/python 04_vectorize/mobilevit_xxs/03_train_multitask.py \
-  --manifest /Users/hanclaw/claw/fast_data/ccg_card_id/datasets/packopening/manifest_aligned_448.csv \
+  --manifest /Users/hanclaw/claw/fast_data/ccg_card_id/datasets/packopening/manifest_aligned_448_ph15.csv \
   --backbone mobilevit_xxs \
   --label-fields illustration_id set_code \
   --task-weights 1.0 1.0 \
@@ -83,7 +83,7 @@ All runs below use the same manifest + backbone + image size.
 
 ```bash
 ./.venv312/bin/python 04_vectorize/mobilevit_xxs/03_train_multitask.py \
-  --manifest /Users/hanclaw/claw/fast_data/ccg_card_id/datasets/packopening/manifest_aligned_448.csv \
+  --manifest /Users/hanclaw/claw/fast_data/ccg_card_id/datasets/packopening/manifest_aligned_448_ph15.csv \
   --backbone mobilevit_xxs \
   --label-fields illustration_id \
   --task-weights 1.0 \
@@ -100,7 +100,7 @@ All runs below use the same manifest + backbone + image size.
 
 ```bash
 ./.venv312/bin/python 04_vectorize/mobilevit_xxs/03_train_multitask.py \
-  --manifest /Users/hanclaw/claw/fast_data/ccg_card_id/datasets/packopening/manifest_aligned_448.csv \
+  --manifest /Users/hanclaw/claw/fast_data/ccg_card_id/datasets/packopening/manifest_aligned_448_ph15.csv \
   --backbone mobilevit_xxs \
   --label-fields set_code \
   --task-weights 1.0 \
