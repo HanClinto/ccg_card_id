@@ -101,13 +101,13 @@ So we evaluate with Sol Ring as a near-worst-case probe while training for broad
 
 These are useful “edition stress” candidates, with Scryfall links.
 
-| Rank | Card (sample) | Prints |
-|---|---|---:|---|
-| 1 | Sol Ring | [43 prints](https://scryfall.com/search?q=illustrationid%3A146aaae4-93f4-409a-be32-010e86d137da+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
-| 2 | Terramorphic Expanse | [39 prints](https://scryfall.com/search?q=illustrationid%3Ac6230ffb-dd2c-4a2c-aeaf-13ba42c89472+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
-| 3 | Exotic Orchard | [35 prints](https://scryfall.com/search?q=illustrationid%3Af67845cb-fe3b-4f90-8de2-bdb69daca307+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
-| 4 | Arcane Signet | [32 prints](https://scryfall.com/search?q=illustrationid%3A06d7b990-021a-4b1f-9333-4fc82adf0ea4+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
-| 5 | Swiftfoot Boots | [31 prints](https://scryfall.com/search?q=illustrationid%3A798a59e5-d388-4110-9437-9616bdfd7c14+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
+| Rank | Card | Artist | Prints |
+|---|---|---|---|
+| 1 | Sol Ring | Mike Bierek | [43 prints](https://scryfall.com/search?q=illustrationid%3A146aaae4-93f4-409a-be32-010e86d137da+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
+| 2 | Terramorphic Expanse | Dan Murayama Scott | [39 prints](https://scryfall.com/search?q=illustrationid%3Ac6230ffb-dd2c-4a2c-aeaf-13ba42c89472+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
+| 3 | Exotic Orchard | Steven Belledin | [35 prints](https://scryfall.com/search?q=illustrationid%3Af67845cb-fe3b-4f90-8de2-bdb69daca307+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
+| 4 | Arcane Signet | Dan Murayama Scott | [32 prints](https://scryfall.com/search?q=illustrationid%3A06d7b990-021a-4b1f-9333-4fc82adf0ea4+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
+| 5 | Swiftfoot Boots | Svetlin Velinov | [31 prints](https://scryfall.com/search?q=illustrationid%3A798a59e5-d388-4110-9437-9616bdfd7c14+include%3Aextras+unique%3Aprints&unique=prints&as=grid&order=released) |
 
 ---
 
