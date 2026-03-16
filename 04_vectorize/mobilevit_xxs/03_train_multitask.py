@@ -358,10 +358,10 @@ def run(args: argparse.Namespace) -> None:
     mode_tag = "sep" if args.separate_heads else "shared"
     fields_tag = "+".join(label_fields)
     dims_tag = "+".join(f"{d}d" for d in embedding_dims)
-    run_dir = (
-        args.output_dir
-        / f"{args.backbone}_multitask_{fields_tag}_{mode_tag}_{dims_tag}"
-    )
+    base_name = f"{args.backbone}_multitask_{fields_tag}_{mode_tag}_{dims_tag}"
+    if args.run_tag:
+        base_name = f"{base_name}_{args.run_tag}"
+    run_dir = args.output_dir / base_name
     run_dir.mkdir(parents=True, exist_ok=True)
     history_path = run_dir / "train_history.json"
 
@@ -512,6 +512,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use a separate projection layer per task instead of a shared one",
     )
     p.add_argument("--output-dir", type=Path, default=data_dir / "results" / "mobilevit_xxs")
+    p.add_argument("--run-tag", type=str, default="",
+                   help="Optional suffix to append to run directory name (for bakeoff naming)")
     p.add_argument("--backbone", default="mobilevit_xxs",
                    choices=["mobilevit_xxs", "tinyvit", "resnet50"])
     p.add_argument(
