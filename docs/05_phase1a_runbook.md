@@ -14,8 +14,9 @@ Backbone is fixed in this phase: `mobilevit_xxs`.
 - Input size: **448x448**
 - Train data: packopening aligned cache on SSD (`aligned_448`)
 - pHash quality filter: **max phash_dist = 15** (start), optional stricter run at 10 later
+- Light augmentation default: ColorJitter only
 - No HFlip / VFlip
-- Rotation only 180° (optional ablation, not default)
+- Optional exact 180° rotation via `--rotate-180-p` (default off)
 
 Eval/reporting datasets:
 - `solring` (primary torture test for edition)

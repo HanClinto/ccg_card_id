@@ -56,17 +56,25 @@ _MEAN = [0.485, 0.456, 0.406]
 _STD = [0.229, 0.224, 0.225]
 
 
-def _train_transform(image_size: int) -> transforms.Compose:
-    return transforms.Compose([
-        transforms.RandomResizedCrop(image_size, scale=(0.85, 1.0), ratio=(0.92, 1.08)),
-        transforms.RandomAffine(degrees=5, translate=(0.03, 0.03), scale=(0.97, 1.03)),
-        transforms.RandomPerspective(distortion_scale=0.1, p=0.3),
-        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.05),
-        transforms.RandomGrayscale(p=0.05),
-        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+def _train_transform(image_size: int, rotate_180_p: float = 0.0) -> transforms.Compose:
+    """Light augmentation profile for real-camera aligned card crops.
+
+    Policy:
+    - No random crop/affine/perspective (already present in captured data)
+    - Color jitter only
+    - Optional exact 180° rotation (p configurable)
+    """
+    aug = [
+        transforms.Resize((image_size, image_size), antialias=True),
+    ]
+    if rotate_180_p > 0:
+        aug.append(transforms.RandomApply([transforms.RandomRotation((180, 180))], p=rotate_180_p))
+    aug.extend([
+        transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.2, hue=0.03),
         transforms.ToTensor(),
         transforms.Normalize(mean=_MEAN, std=_STD),
     ])
+    return transforms.Compose(aug)
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +90,12 @@ class MultiTaskDataset(Dataset):
         label_to_idx_per_task: list[dict[str, int]],
         label_fields: list[str],
         image_size: int,
+        rotate_180_p: float,
     ):
         # Filter to rows that have a valid label for every task
         self.label_fields = label_fields
         self.label_to_idx = label_to_idx_per_task
-        self.transform = _train_transform(image_size)
+        self.transform = _train_transform(image_size, rotate_180_p=rotate_180_p)
 
         self.rows = [
             r for r in rows
@@ -306,6 +315,7 @@ def run(args: argparse.Namespace) -> None:
         label_to_idx_per_task=label_to_idx_per_task,
         label_fields=label_fields,
         image_size=args.image_size,
+        rotate_180_p=args.rotate_180_p,
     )
     print(f"Training rows after filtering: {len(ds)} / {len(rows_train)}")
 
@@ -529,6 +539,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arcface-margin", type=float, default=0.3)
     p.add_argument("--arcface-scale", type=float, default=32.0)
     p.add_argument("--image-size", type=int, default=224)
+    p.add_argument("--rotate-180-p", type=float, default=0.0,
+                   help="Probability of applying exact 180° rotation during training (default: 0.0)")
     p.add_argument("--num-workers", type=int, default=4,
                    help="DataLoader worker processes (default: 4; use 0 on MPS if you hit issues)")
     p.add_argument("--seed", type=int, default=42)
