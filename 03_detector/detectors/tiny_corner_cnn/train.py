@@ -33,7 +33,9 @@ Format: {"model": state_dict, "optimizer": state_dict, "epoch": N, "val_loss": v
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -152,22 +154,114 @@ def pick_device(cpu: bool = False) -> torch.device:
 
 
 # ---------------------------------------------------------------------------
+# Run naming and history logging
+# ---------------------------------------------------------------------------
+
+def _make_run_name(args: argparse.Namespace) -> str:
+    """Build a self-documenting run name from training args.
+
+    Convention: {backbone}_{head}_{loss_cfg}_{input}_{data_filter}
+      backbone   : tcnn  (TinyCornerCNN) | mvit (MobileViTCornerDetector)
+      head       : softargmax (heatmap+soft-argmax) | reg (direct regression)
+      loss_cfg   : lc{N}lh{N}  e.g. lc5lh0; mvit omits lh (no heatmap head)
+      input      : img{size}   e.g. img448
+      data_filter: ph{N}       (packopening, phash_dist≤N) | clint
+
+    Examples:
+      tcnn_softargmax_lc5lh0_img448_ph20
+      tcnn_softargmax_lc5lh10_img448_ph20
+      mvit_reg_lc5_img448_ph20
+    """
+    backbone = "tcnn" if args.arch == "tiny" else "mvit"
+    head     = "softargmax" if args.arch == "tiny" else "reg"
+
+    lc = int(args.lambda_corners) if args.lambda_corners == int(args.lambda_corners) else args.lambda_corners
+    loss_cfg = f"lc{lc}"
+    if args.arch == "tiny":
+        lh = int(args.lambda_heatmap) if args.lambda_heatmap == int(args.lambda_heatmap) else args.lambda_heatmap
+        loss_cfg += f"lh{lh}"
+
+    from dataset import INPUT_SIZE
+    input_tag   = f"img{INPUT_SIZE}"
+    data_filter = f"ph{args.max_phash_dist}" if args.train_source == "packopening" else "clint"
+
+    return f"{backbone}_{head}_{loss_cfg}_{input_tag}_{data_filter}"
+
+
+_HISTORY_COLS = [
+    "run_name", "epoch", "timestamp",
+    "arch", "lambda_corners", "lambda_heatmap", "batch_size", "lr_start",
+    "train_source", "max_phash_dist",
+    "train_loss", "val_loss", "val_cpe", "val_pres_acc",
+    "test_cpe", "test_pres_acc", "lr_end",
+    "checkpoint_saved",
+]
+
+
+def _append_history_row(
+    history_csv: Path,
+    run_name: str,
+    epoch: int,
+    args: argparse.Namespace,
+    train_loss: float,
+    val_loss: float,
+    val_cpe: float,
+    val_pres_acc: float,
+    test_cpe: float | None,
+    test_pres_acc: float | None,
+    lr_end: float,
+    checkpoint_saved: bool,
+) -> None:
+    """Append one epoch row to the shared training history CSV."""
+    history_csv.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not history_csv.exists()
+    with history_csv.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=_HISTORY_COLS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({
+            "run_name":         run_name,
+            "epoch":            epoch,
+            "timestamp":        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "arch":             args.arch,
+            "lambda_corners":   args.lambda_corners,
+            "lambda_heatmap":   args.lambda_heatmap,
+            "batch_size":       args.batch_size,
+            "lr_start":         args.lr,
+            "train_source":     args.train_source,
+            "max_phash_dist":   args.max_phash_dist if args.train_source == "packopening" else "",
+            "train_loss":       f"{train_loss:.6f}",
+            "val_loss":         f"{val_loss:.6f}",
+            "val_cpe":          f"{val_cpe:.6f}",
+            "val_pres_acc":     f"{val_pres_acc:.6f}",
+            "test_cpe":         f"{test_cpe:.6f}" if test_cpe is not None else "",
+            "test_pres_acc":    f"{test_pres_acc:.6f}" if test_pres_acc is not None else "",
+            "lr_end":           f"{lr_end:.6e}",
+            "checkpoint_saved": int(checkpoint_saved),
+        })
+
+
+# ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
 
 def run(args: argparse.Namespace) -> None:
     data_dir      = args.data_dir
     fast_data_dir = args.fast_data_dir
-    results_dir   = args.results_dir or (data_dir / f"results/corner_detector_{args.arch}")
+    run_name      = _make_run_name(args)
+    results_dir   = args.results_dir or (data_dir / "results" / "corner_detector" / run_name)
+    history_csv   = data_dir / "results" / "corner_detector" / "training_history.csv"
 
     if fast_data_dir is not None:
         print(f"fast_data_dir: {fast_data_dir}  (cache)")
     else:
         print("fast_data_dir: (none — loading from data_dir)")
 
+    print(f"run_name     : {run_name}")
     print(f"data_dir     : {data_dir}")
     print(f"train_source : {args.train_source}")
     print(f"results_dir  : {results_dir}")
+    print(f"history_csv  : {history_csv}")
 
     clint_csv = args.clint_corners_csv
     clint_neg = args.clint_neg_dir
@@ -366,8 +460,17 @@ def run(args: argparse.Namespace) -> None:
             "val_loss": val_loss,
         }
         torch.save(ckpt, last_ckpt)
-        if args.checkpoint_every > 0 and epoch % args.checkpoint_every == 0:
+        saved_epoch_ckpt = args.checkpoint_every > 0 and epoch % args.checkpoint_every == 0
+        if saved_epoch_ckpt:
             torch.save(ckpt, results_dir / f"epoch_{epoch:04d}.pt")
+
+        _append_history_row(
+            history_csv, run_name, epoch, args,
+            train_loss, val_loss, cpe, pres_acc,
+            test_cpe, test_pres_acc,
+            lr_end=cur_lr,
+            checkpoint_saved=saved_epoch_ckpt,
+        )
 
     print(f"Training complete. Checkpoints in: {results_dir}")
 
@@ -428,7 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--results-dir", type=Path, default=None,
-        help="Directory for checkpoints (default: results/corner_detector_{arch})",
+        help="Directory for checkpoints (default: results/corner_detector/{run_name})",
     )
     p.add_argument(
         "--seed-checkpoint", type=Path, default=None,
