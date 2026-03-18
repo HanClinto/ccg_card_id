@@ -185,10 +185,14 @@ def _make_run_name(args: argparse.Namespace) -> str:
     input_tag   = f"img{INPUT_SIZE}"
     data_filter = f"ph{args.max_phash_dist}" if args.train_source == "packopening" else "clint"
 
-    # For mobilevit, encode backbone seed source: seedin (ImageNet) or seedcid (card-ID ArcFace)
+    # For mobilevit, encode seed source and backbone LR scale
     seed_tag = ""
     if args.arch == "mobilevit":
         seed_tag = "_seedcid" if args.seed_checkpoint is not None else "_seedin"
+        if args.backbone_lr_scale != 1.0:
+            # e.g. 0.1 → blr01, 0.01 → blr001
+            scale_str = f"{args.backbone_lr_scale:.2f}".replace("0.", "").replace(".", "")
+            seed_tag += f"_blr{scale_str}"
 
     return f"{backbone}_{head}_{loss_cfg}_{input_tag}_{data_filter}{seed_tag}"
 
@@ -327,7 +331,20 @@ def run(args: argparse.Namespace) -> None:
             print(f"seeding backbone from {args.seed_checkpoint}")
             model.load_card_id_checkpoint(args.seed_checkpoint)
 
-    optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # Differential LR: for mobilevit, use a lower LR for the pretrained backbone
+    # to avoid catastrophic forgetting while the head learns quickly.
+    backbone_lr = args.lr * args.backbone_lr_scale
+    if args.arch == "mobilevit" and args.backbone_lr_scale != 1.0:
+        head_params     = list(model.spatial_pool.parameters()) + list(model.head.parameters())
+        backbone_params = list(model.backbone.parameters())
+        optim = torch.optim.AdamW([
+            {"params": backbone_params, "lr": backbone_lr,  "name": "backbone"},
+            {"params": head_params,     "lr": args.lr,      "name": "head"},
+        ], weight_decay=1e-4)
+        print(f"lr          : backbone={backbone_lr:.2e}  head={args.lr:.2e}")
+    else:
+        optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        print(f"lr          : {args.lr:.2e}")
 
     results_dir.mkdir(parents=True, exist_ok=True)
     last_ckpt = results_dir / "last.pt"
@@ -342,10 +359,11 @@ def run(args: argparse.Namespace) -> None:
         if "optimizer" in ckpt:
             optim.load_state_dict(ckpt["optimizer"])
         # Reset LR to args.lr so the new cosine cycle starts correctly.
-        # Without this the scheduler would inherit the near-zero end-of-cycle
-        # LR from the previous run and the new cycle would be useless.
         for pg in optim.param_groups:
-            pg["lr"] = args.lr
+            if pg.get("name") == "backbone":
+                pg["lr"] = backbone_lr
+            else:
+                pg["lr"] = args.lr
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         print(f"resuming from epoch {start_epoch - 1}")
 
@@ -564,6 +582,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--rebuild", action="store_true",
         help="Ignore last.pt and train from scratch",
+    )
+    p.add_argument(
+        "--backbone-lr-scale", type=float, default=0.1,
+        help="LR multiplier for pretrained backbone vs head (mobilevit only). "
+             "Default 0.1 — backbone trains at lr*0.1 to avoid catastrophic forgetting. "
+             "Set to 1.0 to use the same LR for all parameters.",
     )
     p.add_argument("--cpu", action="store_true", help="Force CPU even if GPU is available")
     return p
