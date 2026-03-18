@@ -185,7 +185,12 @@ def _make_run_name(args: argparse.Namespace) -> str:
     input_tag   = f"img{INPUT_SIZE}"
     data_filter = f"ph{args.max_phash_dist}" if args.train_source == "packopening" else "clint"
 
-    return f"{backbone}_{head}_{loss_cfg}_{input_tag}_{data_filter}"
+    # For mobilevit, encode backbone seed source: seedin (ImageNet) or seedcid (card-ID ArcFace)
+    seed_tag = ""
+    if args.arch == "mobilevit":
+        seed_tag = "_seedcid" if args.seed_checkpoint is not None else "_seedin"
+
+    return f"{backbone}_{head}_{loss_cfg}_{input_tag}_{data_filter}{seed_tag}"
 
 
 _HISTORY_COLS = [

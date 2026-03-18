@@ -226,12 +226,15 @@ class MobileViTCornerDetector(nn.Module):
         self.backbone = timm.create_model(
             "mobilevit_xxs", pretrained=pretrained_backbone, num_classes=0
         )
-        # forward_features() returns (B, 320, H/32, W/32); pool to 4×4
-        spatial_feat_dim = 320 * 4 * 4  # 5120
+        # forward_features() returns (B, 320, H/32, W/32).
+        # Pool to 2×2 — divides 14×14 (448/32) evenly and captures 4-quadrant
+        # spatial structure that maps naturally onto TL/TR/BL/BR corners.
+        # Note: MPS requires input size divisible by output size for adaptive pool.
+        spatial_feat_dim = 320 * 2 * 2  # 1280
 
-        self.spatial_pool = nn.AdaptiveAvgPool2d(4)
+        self.spatial_pool = nn.AdaptiveAvgPool2d(2)
         self.head = nn.Sequential(
-            nn.Flatten(),
+            nn.Flatten(),                             # (B, 1280)
             nn.LayerNorm(spatial_feat_dim),
             nn.Linear(spatial_feat_dim, 256),
             nn.GELU(),
