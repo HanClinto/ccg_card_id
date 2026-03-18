@@ -199,12 +199,20 @@ class TinyCornerCNN(nn.Module):
 # ---------------------------------------------------------------------------
 
 class MobileViTCornerDetector(nn.Module):
-    """MobileViT-XXS backbone + corner regression head.
+    """MobileViT-XXS backbone + spatial-aware direct regression head.
 
-    951K parameters, 3.6 MB fp32.  Same backbone as the card-ID model —
-    backbone weights can be seeded from a pretrained ArcFace checkpoint via
-    load_card_id_checkpoint().  Still uses global direct regression (not
-    updated to heatmap architecture).
+    951K parameters backbone, 3.6 MB fp32.  Same backbone as the card-ID
+    model — backbone weights can be seeded from a pretrained ArcFace
+    checkpoint via load_card_id_checkpoint().
+
+    Uses forward_features() to obtain the final spatial feature map
+    (B, 320, H/32, W/32) before global pooling, then pools to 4×4 to
+    retain coarse spatial information before regressing corner coordinates.
+    This preserves the spatial layout of features (which quadrant of the
+    image each feature came from) while keeping the head lightweight.
+
+    At 448×448 input: backbone outputs (B, 320, 14, 14) → pool to (B, 320, 4, 4)
+    → flatten to (B, 5120) → head → (B, 9).
 
     Returns 2-tuple (corners (B,8), presence (B,)) for compatibility.
 
@@ -218,19 +226,23 @@ class MobileViTCornerDetector(nn.Module):
         self.backbone = timm.create_model(
             "mobilevit_xxs", pretrained=pretrained_backbone, num_classes=0
         )
-        feat_dim = self.backbone.num_features  # 384
+        # forward_features() returns (B, 320, H/32, W/32); pool to 4×4
+        spatial_feat_dim = 320 * 4 * 4  # 5120
 
+        self.spatial_pool = nn.AdaptiveAvgPool2d(4)
         self.head = nn.Sequential(
-            nn.LayerNorm(feat_dim),
-            nn.Linear(feat_dim, 256),
+            nn.Flatten(),
+            nn.LayerNorm(spatial_feat_dim),
+            nn.Linear(spatial_feat_dim, 256),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(256, 9),
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        feats = self.backbone(x)
-        out   = self.head(feats)
+        feats = self.backbone.forward_features(x)  # (B, 320, H/32, W/32)
+        feats = self.spatial_pool(feats)            # (B, 320, 4, 4)
+        out   = self.head(feats)                    # (B, 9)
         return out[:, :8], out[:, 8]
 
     def load_card_id_checkpoint(self, ckpt_path: Path | str) -> None:

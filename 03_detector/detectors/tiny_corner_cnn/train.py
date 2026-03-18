@@ -173,7 +173,7 @@ def _make_run_name(args: argparse.Namespace) -> str:
       mvit_reg_lc5_img448_ph20
     """
     backbone = "tcnn" if args.arch == "tiny" else "mvit"
-    head     = "softargmax" if args.arch == "tiny" else "reg"
+    head     = "softargmax" if args.arch == "tiny" else "spatialreg"
 
     lc = int(args.lambda_corners) if args.lambda_corners == int(args.lambda_corners) else args.lambda_corners
     loss_cfg = f"lc{lc}"
