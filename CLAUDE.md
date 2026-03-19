@@ -289,3 +289,11 @@ Supports resume via `corners_progress.json`.
   ArcFace class label (~108k classes, ~1 sample each) and diverged or
   collapsed. All current runs use `illustration_id` (~20.5k classes,
   multi-sample) which trains stably.
+- **Val split is not open-set** — the current manifest stratifies by
+  `illustration_id`, so every class has images in both train and val. This
+  means validation loss measures recognition of *trained* artworks, not
+  generalisation to unseen ones. **For the next training run, rebuild the
+  manifest with a proper open-set split: reserve ~15–20% of `illustration_id`s
+  entirely (no training images from those classes), and use only those held-out
+  classes for validation retrieval.** This is critical for evaluating transfer
+  to new Magic printings, Pokémon, Yu-Gi-Oh, or any other card game.
