@@ -43,6 +43,19 @@ On the primary dev machine the data lives on an external drive:
 ccg_card_id/                    package — config, shared utilities
   config.py                     cfg object and data-dir resolution
   project_settings.py           get_data_dir()
+  catalog.py                    Scryfall SQLite catalog (lazy, read-only)
+  pokemon_catalog.py            Pokemon TCG SQLite catalog (same API shape)
+
+01_data_sources/
+  scryfall/
+    01_sync_data.py             fetch all_cards.json + default_cards.json
+    02_build_card_db.py         build cards.db from bulk JSON
+    03_sync_images.py           download reference PNGs
+  pokemontcgio/
+    01_sync_data.py             fetch all_cards.json (paginated API, ~18k cards)
+    02_build_card_db.py         build cards.db (synthetic illustration_id)
+    03_sync_images.py           download card images (--rebuild HEAD-checks)
+    04_build_manifest.py        build ManifestRow-compatible manifest.csv
 
 02_data_sets/                   per-dataset processing pipelines
   sol_ring/
@@ -73,6 +86,11 @@ catalog/scryfall/images/png/front/{a}/{b}/{uuid}.png   Scryfall reference PNGs
 all_cards.json                  Scryfall bulk JSON, all languages (~517k cards)
 default_cards.json              Scryfall bulk JSON, English defaults
 
+catalog/pokemontcg/
+  all_cards.json                Pokemon TCG bulk JSON (~18k cards)
+  images/large/{a}/{b}/{id}.png Pokemon TCG card images
+  manifest.csv                  ManifestRow manifest (open-set split by illustration_id)
+
 mobilevit_xxs/
   artwork_id_manifest.csv       81 834 rows — training manifest (see below)
 
@@ -99,6 +117,46 @@ results/
 vectors/mobilevit_xxs/img224/   embedding cache (.npz), keyed by model variant
 vectors/phash/                  pHash cache (.npz)
 ```
+
+---
+
+## Multi-game catalog design
+
+Each game has its own SQLite catalog and a parallel Python module with the same
+public API. They are **never merged** into a single DB — the file path encodes
+the game.
+
+| Game | JSON | DB (fast storage) | Module |
+|---|---|---|---|
+| Magic (Scryfall) | `all_cards.json` | `catalog/scryfall/cards.db` | `ccg_card_id.catalog` |
+| Pokemon TCG | `catalog/pokemontcg/all_cards.json` | `catalog/pokemontcg/cards.db` | `ccg_card_id.pokemon_catalog` |
+
+Both catalogs expose the same methods: `card()`, `cards_by_ids()`, `all_cards()`,
+`valid_set_codes()`, `set_names()`. Manifests from either game are directly
+compatible with the training pipeline (same `ManifestRow` schema).
+
+### Pokemon TCG field mapping
+
+| ManifestRow field | Pokemon source |
+|---|---|
+| `card_id` | `id` (e.g. `"base1-4"`) |
+| `illustration_id` | `sha1(name + "\|" + artist)[:16]` — synthetic, groups same-art reprints |
+| `oracle_id` | `nationalPokedexNumbers[0]` zero-padded to 4 digits (`"0007"`) |
+| `set_code` | `set.id` (e.g. `"base1"`) |
+| `lang` | `"en"` (API is English-primary) |
+| `source` | `"pokemontcg"` |
+
+### Pokemon TCG update pipeline
+
+```bash
+python 01_data_sources/pokemontcgio/01_sync_data.py        # full re-sync (~72 API pages)
+python 01_data_sources/pokemontcgio/02_build_card_db.py    # rebuild DB if JSON is newer
+python 01_data_sources/pokemontcgio/03_sync_images.py --rebuild   # HEAD-check + download new/changed
+python 01_data_sources/pokemontcgio/04_build_manifest.py   # rebuild manifest.csv
+```
+
+Image sync modes: default = skip existing; `--rebuild` = HEAD-check mtime;
+`--force-rebuild` = redownload all unconditionally.
 
 ---
 
