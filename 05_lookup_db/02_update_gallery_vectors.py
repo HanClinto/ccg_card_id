@@ -5,9 +5,10 @@ Computes (or refreshes) gallery vectors for all configured identifiers:
   - pHash at 8×8, 16×16, 32×32
   - ArcFace for the latest checkpoint (or a specified one)
 
-Uses fingerprint-based cache invalidation: if the gallery paths list has
-changed since last run (e.g. new cards were added), the cache is automatically
-marked stale and recomputed.  If nothing has changed, this is a no-op.
+Uses incremental cache updates by default: if the manifest path list changes,
+existing gallery caches reuse vectors for unchanged paths, compute vectors only
+for new paths, and drop removed paths so the output stays aligned to the current
+manifest order. Use --rebuild to force a full recompute.
 
 Run after:
   - 01_data_sources/scryfall/03_sync_images.py   (new card images available)
@@ -83,11 +84,13 @@ def _checkpoint_variant(ckpt_path: Path) -> str:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Update gallery NPZs for web scanner")
+    p = argparse.ArgumentParser(
+        description="Update web-scanner gallery NPZs with incremental reuse; use --rebuild for a full recompute"
+    )
     p.add_argument(
         "--manifest", type=Path,
         default=cfg.data_dir / "mobilevit_xxs" / "artwork_id_manifest.csv",
-        help="Gallery manifest CSV (default: artwork_id_manifest.csv)",
+        help="Gallery manifest CSV; cache order follows this manifest (default: artwork_id_manifest.csv)",
     )
     p.add_argument(
         "--checkpoint", type=Path, default=None,
@@ -101,16 +104,20 @@ def main() -> None:
     p.add_argument(
         "--phash-gallery-dir", type=Path,
         default=None,
-        help="Override pHash gallery output dir",
+        help="Override pHash gallery output dir for incremental gallery caches",
     )
     p.add_argument(
         "--arcface-gallery-dir", type=Path,
         default=None,
-        help="Override ArcFace gallery output dir",
+        help="Override ArcFace gallery output dir for incremental gallery caches",
     )
     p.add_argument("--skip-phash",   action="store_true", help="Skip pHash gallery update")
     p.add_argument("--skip-arcface", action="store_true", help="Skip ArcFace gallery update")
-    p.add_argument("--rebuild",      action="store_true", help="Force recompute even if cache is valid")
+    p.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Force full recompute instead of incrementally reusing unchanged cache entries",
+    )
     p.add_argument("--batch-size",   type=int, default=64)
     args = p.parse_args()
 

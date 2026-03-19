@@ -82,35 +82,65 @@ def _cache_fingerprint(paths: list[Path], image_size: int) -> str:
     return h.hexdigest()
 
 
-def embed_paths(
+def _paths_to_cache_array(paths: list[Path]) -> np.ndarray:
+    return np.asarray([str(p) for p in paths], dtype=np.str_)
+
+
+def _load_embedding_cache(
+    cache_path: Path,
+) -> tuple[np.ndarray, str, list[str] | None]:
+    data = np.load(cache_path, allow_pickle=False)
+    emb = data["embeddings"]
+    fp = str(data["fingerprint"]) if "fingerprint" in data.files else ""
+    cache_paths = data["paths"].tolist() if "paths" in data.files else None
+    if cache_paths is not None:
+        cache_paths = [str(p) for p in cache_paths]
+    return emb, fp, cache_paths
+
+
+def _prepare_incremental_merge(
+    cache_embeddings: np.ndarray,
+    cache_paths: list[str] | None,
+    target_paths: list[Path],
+) -> tuple[np.ndarray | None, list[Path], list[int] | None, dict[str, int] | None]:
+    if cache_paths is None:
+        return None, target_paths, None, None
+
+    target_path_strs = [str(p) for p in target_paths]
+    target_path_set = set(target_path_strs)
+    cache_index = {path: i for i, path in enumerate(cache_paths)}
+    merged_shape = (len(target_paths),) + cache_embeddings.shape[1:]
+    merged = np.empty(merged_shape, dtype=cache_embeddings.dtype)
+
+    missing_paths: list[Path] = []
+    missing_slots: list[int] = []
+    reused = 0
+    for i, path_str in enumerate(target_path_strs):
+        old_idx = cache_index.get(path_str)
+        if old_idx is None:
+            missing_paths.append(target_paths[i])
+            missing_slots.append(i)
+            continue
+        merged[i] = cache_embeddings[old_idx]
+        reused += 1
+
+    stats = {
+        "reused": reused,
+        "added": len(missing_paths),
+        "removed": sum(1 for p in cache_paths if p not in target_path_set),
+    }
+    return merged, missing_paths, missing_slots, stats
+
+
+def _run_embedding_batches(
     model: torch.nn.Module,
     paths: list[Path],
+    *,
     device: torch.device,
     batch_size: int,
     image_size: int,
-    desc: str = "embed",
-    cache_path: Path | None = None,
-    rebuild_cache: bool = False,
+    desc: str,
 ) -> torch.Tensor:
-    if cache_path is not None and cache_path.exists() and not rebuild_cache:
-        try:
-            data = np.load(cache_path, allow_pickle=False)
-            emb = data["embeddings"].astype(np.float32)
-            fp = str(data["fingerprint"]) if "fingerprint" in data.files else ""
-            if fp == _cache_fingerprint(paths, image_size):
-                print(f"{desc}: cache hit -> {cache_path}")
-                return torch.from_numpy(emb)
-            else:
-                print(f"{desc}: cache stale (fingerprint mismatch) -> recomputing")
-        except Exception:
-            print(f"{desc}: cache unreadable -> recomputing")
-
-    if cache_path is not None:
-        if rebuild_cache:
-            print(f"{desc}: rebuild requested -> recomputing embeddings")
-        else:
-            print(f"{desc}: cache miss -> computing embeddings")
-
     tfm = eval_transform(image_size)
     out: list[torch.Tensor] = []
     model.eval()
@@ -122,13 +152,84 @@ def embed_paths(
             z = model(x).detach().to("cpu", dtype=torch.float32)
             out.append(z)
     if not out:
-        emb_t = torch.zeros((0, 1), dtype=torch.float32)
-    else:
-        emb_t = torch.cat(out, dim=0)
+        return torch.zeros((0, 1), dtype=torch.float32)
+    return torch.cat(out, dim=0)
+
+
+def embed_paths(
+    model: torch.nn.Module,
+    paths: list[Path],
+    device: torch.device,
+    batch_size: int,
+    image_size: int,
+    desc: str = "embed",
+    cache_path: Path | None = None,
+    rebuild_cache: bool = False,
+) -> torch.Tensor:
+    fp = _cache_fingerprint(paths, image_size)
+    if cache_path is not None and cache_path.exists() and not rebuild_cache:
+        try:
+            emb, cache_fp, cache_paths = _load_embedding_cache(cache_path)
+            emb = emb.astype(np.float32)
+            if cache_fp == fp:
+                print(f"{desc}: cache hit -> {cache_path}")
+                print(f"{desc}: cache update -> reused {len(paths)}, added 0, removed 0")
+                return torch.from_numpy(emb)
+            merged, missing_paths, missing_slots, stats = _prepare_incremental_merge(emb, cache_paths, paths)
+            if merged is not None and missing_slots is not None and stats is not None:
+                removed = int(stats["removed"])
+                reused = int(stats["reused"])
+                added = int(stats["added"])
+                print(f"{desc}: cache update -> reused {reused}, added {added}, removed {removed}")
+                if missing_paths:
+                    new_emb = _run_embedding_batches(
+                        model,
+                        missing_paths,
+                        device=device,
+                        batch_size=batch_size,
+                        image_size=image_size,
+                        desc=desc,
+                    ).numpy()
+                    for dest_idx, row in zip(missing_slots, new_emb, strict=False):
+                        merged[int(dest_idx)] = row
+                emb_t = torch.from_numpy(merged.astype(np.float32, copy=False))
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(
+                    cache_path,
+                    embeddings=emb_t.numpy(),
+                    fingerprint=fp,
+                    paths=_paths_to_cache_array(paths),
+                )
+                print(f"{desc}: saved cache {cache_path}")
+                return emb_t
+            print(f"{desc}: cache stale (legacy format) -> recomputing all")
+        except Exception:
+            print(f"{desc}: cache unreadable -> recomputing")
+
+    if cache_path is not None:
+        if rebuild_cache:
+            print(f"{desc}: rebuild requested -> recomputing embeddings")
+        else:
+            print(f"{desc}: cache miss -> computing embeddings")
+        print(f"{desc}: cache update -> reused 0, added {len(paths)}, removed 0")
+
+    emb_t = _run_embedding_batches(
+        model,
+        paths,
+        device=device,
+        batch_size=batch_size,
+        image_size=image_size,
+        desc=desc,
+    )
 
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(cache_path, embeddings=emb_t.numpy(), fingerprint=_cache_fingerprint(paths, image_size))
+        np.savez_compressed(
+            cache_path,
+            embeddings=emb_t.numpy(),
+            fingerprint=fp,
+            paths=_paths_to_cache_array(paths),
+        )
         print(f"{desc}: saved cache {cache_path}")
 
     return emb_t
@@ -327,22 +428,49 @@ def compute_phash_embeddings(
     fp = _cache_fingerprint(paths, hash_size)
     if cache_path is not None and cache_path.exists() and not rebuild_cache:
         try:
-            data = np.load(cache_path, allow_pickle=False)
-            if str(data.get("fingerprint", "")) == fp:
+            emb, cache_fp, cache_paths = _load_embedding_cache(cache_path)
+            emb = emb.astype(np.uint8, copy=False)
+            if cache_fp == fp:
                 print(f"{desc}: cache hit -> {cache_path}")
-                return data["embeddings"]
-            print(f"{desc}: cache stale -> recomputing")
+                print(f"{desc}: cache update -> reused {len(paths)}, added 0, removed 0")
+                return emb
+            merged, missing_paths, missing_slots, stats = _prepare_incremental_merge(emb, cache_paths, paths)
+            if merged is not None and missing_slots is not None and stats is not None:
+                removed = int(stats["removed"])
+                reused = int(stats["reused"])
+                added = int(stats["added"])
+                print(f"{desc}: cache update -> reused {reused}, added {added}, removed {removed}")
+                if missing_paths:
+                    new_emb = _phash_array(missing_paths, hash_size, desc)
+                    for dest_idx, row in zip(missing_slots, new_emb, strict=False):
+                        merged[int(dest_idx)] = row
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(
+                    cache_path,
+                    embeddings=merged,
+                    fingerprint=fp,
+                    paths=_paths_to_cache_array(paths),
+                )
+                print(f"{desc}: saved cache {cache_path}")
+                return merged
+            print(f"{desc}: cache stale (legacy format) -> recomputing all")
         except Exception:
             print(f"{desc}: cache unreadable -> recomputing")
     else:
         if cache_path is not None:
             print(f"{desc}: {'rebuild requested' if rebuild_cache else 'cache miss'} -> computing")
+            print(f"{desc}: cache update -> reused 0, added {len(paths)}, removed 0")
 
     arr = _phash_array(paths, hash_size, desc)
 
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(cache_path, embeddings=arr, fingerprint=fp)
+        np.savez_compressed(
+            cache_path,
+            embeddings=arr,
+            fingerprint=fp,
+            paths=_paths_to_cache_array(paths),
+        )
         print(f"{desc}: saved cache {cache_path}")
     return arr
 
