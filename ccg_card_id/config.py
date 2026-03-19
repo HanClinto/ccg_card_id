@@ -50,6 +50,11 @@ class Config:
         # Fast SQLite card catalog (lives on SSD if CCG_FAST_DATA_ROOT is set)
         self.card_db_path: Path = self.fast_data_dir / "catalog" / "scryfall" / "cards.db"
 
+        # Pokemon TCG bulk data + images
+        self.pokemontcg_all_cards: Path = self.data_dir / "catalog" / "pokemontcg" / "all_cards.json"
+        self.pokemontcg_images_dir: Path = self.data_dir / "catalog" / "pokemontcg" / "images"
+        self.pokemontcg_db_path: Path = self.fast_data_dir / "catalog" / "pokemontcg" / "cards.db"
+
     # ------------------------------------------------------------------
     # Vector file paths — named by method and hash_size grid dimension
     # e.g. phash_vectors_file("phash", 64) → default_cards_phash_64.json
