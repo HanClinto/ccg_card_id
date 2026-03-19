@@ -49,8 +49,13 @@ def load_card_metadata(card_ids: list[str]) -> dict[str, dict]:
     }
 
 
-def assign_split(card_id: str) -> str:
-    h = hash(card_id) % 100
+def assign_split(illustration_id: str) -> str:
+    """Split by illustration_id so all reprints of the same art go to the same split.
+
+    This gives a true open-set val/test: no illustration_id seen during training
+    appears in val or test, which properly evaluates generalisation to unseen artworks.
+    """
+    h = hash(illustration_id) % 100
     return "train" if h < 80 else ("val" if h < 90 else "test")
 
 
@@ -99,8 +104,8 @@ def main() -> None:
             "card_id": card_id,
             "card_name": m.get("card_name", ""),
             "set_code": row["set_code"] or "",
-            "split": assign_split(card_id),
             "illustration_id": m.get("illustration_id", row["illustration_id"] or ""),
+            "split": assign_split(m.get("illustration_id", row["illustration_id"] or "") or card_id),
             "oracle_id": m.get("oracle_id", ""),
             "lang": "en",
             "source": "packopening",
@@ -130,15 +135,22 @@ def main() -> None:
         writer.writerows(corners_rows)
 
     splits = {}
+    iids_by_split: dict[str, set] = {}
     for r in manifest_rows:
         splits[r["split"]] = splits.get(r["split"], 0) + 1
+        iids_by_split.setdefault(r["split"], set()).add(r["illustration_id"])
     unique_cards = len({r["card_id"] for r in manifest_rows})
     unique_sets = len({r["set_code"] for r in manifest_rows})
+
+    overlap = iids_by_split.get("train", set()) & iids_by_split.get("val", set())
 
     print(f"manifest.csv: {len(manifest_rows)} rows → {manifest_path}")
     print(f"corners.csv:  {len(corners_rows)} rows → {corners_path}")
     print(f"Summary: {unique_cards} unique cards across {unique_sets} sets")
     print(f"Splits:  train={splits.get('train',0)}  val={splits.get('val',0)}  test={splits.get('test',0)}")
+    print(f"Unique illustration_ids: train={len(iids_by_split.get('train',set()))}  "
+          f"val={len(iids_by_split.get('val',set()))}  test={len(iids_by_split.get('test',set()))}")
+    print(f"illustration_id overlap train∩val: {len(overlap)} (should be 0)")
 
 
 if __name__ == "__main__":
