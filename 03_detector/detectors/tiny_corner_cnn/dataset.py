@@ -26,9 +26,9 @@ Corner column order (both sources): TL, TR, BR, BL — normalized (x, y) in
 [0, 1] relative to image dimensions, produced by the standard sum/diff sort.
 
 Augmentation (training only):
-  Spatial : horizontal flip (with corner reorder), rotation ±30°
+  Spatial : 90°/180°/270° random rotation
             → corner coordinates are transformed accordingly.
-  Color   : ColorJitter, RandomGrayscale, GaussianBlur.
+  Color   : ColorJitter (brightness/contrast/saturation/hue).
 """
 from __future__ import annotations
 
@@ -283,11 +283,9 @@ class CornerDataset(Dataset):
                 transforms.ToTensor(),
                 transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
             ])
-        self._color_jitter = transforms.Compose([
-            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.1),
-            transforms.RandomGrayscale(p=0.05),
-            transforms.RandomApply([transforms.GaussianBlur(kernel_size=5)], p=0.2),
-        ])
+        self._color_jitter = transforms.ColorJitter(
+            brightness=0.4, contrast=0.4, saturation=0.3, hue=0.1,
+        )
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -353,13 +351,6 @@ class CornerDataset(Dataset):
             img = TF.rotate(img, angle=90 * k, expand=False)
             if corners is not None:
                 corners = _rotate_corners(corners, 90.0 * k, cx=0.5, cy=0.5)
-
-        # Random fine rotation ±30°
-        if random.random() < 0.5:
-            angle = random.uniform(-30, 30)
-            img = TF.rotate(img, angle, expand=False)
-            if corners is not None:
-                corners = _rotate_corners(corners, angle, cx=0.5, cy=0.5)
 
         # Restore canonical corner order (TL→TR→BR→BL) after augmentation.
         # This ensures the direct per-channel loss in training always sees

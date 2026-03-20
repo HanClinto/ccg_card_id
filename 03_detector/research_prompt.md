@@ -313,9 +313,11 @@ We are looking for recommendations on:
    - Classical + learned hybrid approaches
 
 4. **Data augmentation strategies** specific to corner detection that we may be missing.
-   We currently do: rotation ±30° + 90°/180°/270°, ColorJitter, RandomGrayscale, GaussianBlur.
-   Horizontal flip was deliberately excluded (MTG cards have asymmetric text/art — mirrored
-   cards do not exist in the real world).
+   We currently do: 90°/180°/270° rotation, ColorJitter (brightness/contrast/saturation/hue).
+   Excluded: horizontal flip (MTG cards have asymmetric text/art — mirrored cards don't exist),
+   fine rotation ±30° (slow, and real-world frames already contain the full range of card angles),
+   GaussianBlur (real video frames already contain motion blur natively),
+   RandomGrayscale (minimal value given camera captures are always color).
 
 5. **Is there a canonical "card corner detection" solution** in the wild (mobile scanning
    apps, document scanners) that we should be adapting rather than training from scratch?
