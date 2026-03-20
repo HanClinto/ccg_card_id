@@ -99,6 +99,8 @@ def main() -> None:
                    help="Override channel name stored in DB")
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would be added without writing to DB")
+    p.add_argument("--game", default="mtg", choices=["mtg", "pokemon"],
+                   help="Game type to tag all videos from this channel (default: mtg)")
     p.add_argument("--data-dir", type=Path, default=cfg.data_dir)
     args = p.parse_args()
 
@@ -134,10 +136,10 @@ def main() -> None:
         # Insert all rows in a single transaction — much faster than one commit per row
         for v in new_videos:
             slug = make_slug(v["video_id"], v["title"])
-            cols = ["video_id", "slug", "url", "channel", "title", "set_codes", "status", "added_date", "notes"]
+            cols = ["video_id", "slug", "url", "channel", "title", "set_codes", "status", "added_date", "notes", "game"]
             con.execute(
                 f"INSERT OR REPLACE INTO videos ({','.join(cols)}) VALUES ({','.join(['?']*len(cols))})",
-                [v["video_id"], slug, v["url"], channel, v["title"], "", "new", today, ""],
+                [v["video_id"], slug, v["url"], channel, v["title"], "", "new", today, "", args.game],
             )
         con.commit()
         print("done.")

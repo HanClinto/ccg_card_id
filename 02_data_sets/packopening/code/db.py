@@ -88,6 +88,7 @@ _MIGRATIONS = [
     "ALTER TABLE videos ADD COLUMN densified INTEGER DEFAULT 0",
     "ALTER TABLE frames ADD COLUMN phash_dist INTEGER",
     "ALTER TABLE frames ADD COLUMN human_review TEXT",
+    "ALTER TABLE videos ADD COLUMN game TEXT DEFAULT 'mtg'",
 ]
 
 
@@ -136,6 +137,7 @@ def claim_next_video(
     from_status: str,
     to_status: str = "processing",
     channel: str | None = None,
+    game: str | None = None,
 ) -> sqlite3.Row | None:
     """Atomically claim the next video with from_status, setting it to to_status.
 
@@ -145,16 +147,21 @@ def claim_next_video(
     will match 0 rows and the caller retries automatically.
 
     If channel is given, only videos whose channel column matches are considered.
+    If game is given, only videos whose game column matches are considered.
 
     Returns the claimed row (with its original field values), or None when the
     queue is empty.
     """
+    conditions = ["status=?"]
+    select_params: list = [from_status]
     if channel:
-        select_sql = "SELECT * FROM videos WHERE status=? AND channel=? ORDER BY rowid DESC LIMIT 1"
-        select_params: tuple = (from_status, channel)
-    else:
-        select_sql = "SELECT * FROM videos WHERE status=? ORDER BY rowid DESC LIMIT 1"
-        select_params = (from_status,)
+        conditions.append("channel=?")
+        select_params.append(channel)
+    if game:
+        conditions.append("game=?")
+        select_params.append(game)
+    where = " AND ".join(conditions)
+    select_sql = f"SELECT * FROM videos WHERE {where} ORDER BY rowid DESC LIMIT 1"
 
     while True:
         row = con.execute(select_sql, select_params).fetchone()
