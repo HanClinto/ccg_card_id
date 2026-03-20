@@ -1,35 +1,39 @@
 #!/usr/bin/env python3
 """Neural corner detector models.
 
-Two architectures are provided — choose based on your deployment target:
+Three architectures are provided:
 
-TinyCornerCNN  (recommended for most uses)
---------------------------------------------
-  ~48K parameters, 0.2 MB fp32, ~50 KB int8.
-  Pure depthwise-separable CNN — no attention, no external dependencies.
-  Input: 448×448.  Encoder output: 28×28 spatial maps.
-  Corners extracted via soft-argmax over 4-channel heatmaps — one channel
-  per corner (TL, TR, BR, BL).  Spatial precision: 448/16 = 28px grid,
-  i.e. ~16px resolution at the input scale.
+TinyCornerCNN  (soft-argmax heatmap head — CONCLUSIVELY STUCK)
+--------------------------------------------------------------
+  ~48K parameters, 0.2 MB fp32.  Heatmap head + soft-argmax.
+  RESULT: val_cpe permanently stuck at ~0.63 (image-center baseline) over
+  40+ epochs. Root cause: BCE loss and soft-argmax pull in opposite directions
+  (see v0.3 experiment notes in README). Do not use for new training runs.
+  Kept for reference and for the quick diagnostic below.
 
-  Heatmap output naturally handles occlusion: an occluded corner produces
-  a low-confidence, diffuse peak rather than a confident wrong prediction.
-  Per-corner confidence is available from heatmap peak values.
+TinyCornerCNNDirect  (direct regression — diagnostic run)
+----------------------------------------------------------
+  ~49K parameters, 0.2 MB fp32.  Same encoder as TinyCornerCNN, but replaces
+  the heatmap/soft-argmax head with AdaptiveAvgPool2d(2) → LayerNorm → MLP → 9.
+  Purpose: isolate whether soft-argmax was the *only* problem, or whether the
+  48K backbone also lacks capacity. If this breaks the center baseline, the
+  architecture was fine and soft-argmax was the sole culprit.
 
-MobileViTCornerDetector  (ablation / accuracy ceiling)
---------------------------------------------------------
-  951K parameters, 3.6 MB fp32.  Uses the same MobileViT-XXS backbone as the
-  card-ID model, so backbone weights can be seeded from a pretrained ArcFace
-  checkpoint.  Still uses direct global regression (not updated to heatmap).
+MobileViTCornerDetector  (primary path forward)
+------------------------------------------------
+  951K parameters, 3.6 MB fp32.  MobileViT-XXS backbone (ImageNet pretrained)
+  + spatial-aware direct regression head (AdaptiveAvgPool2d(4) → MLP → 9).
+  Seed: ImageNet pretrained weights only — do NOT seed from ArcFace card-ID
+  checkpoints, which are trained on aligned card internals and focus on fine
+  artwork/typography details rather than card borders.
+  Pool is 4×4 (5120-d) to preserve more spatial information than the earlier
+  2×2 design (1280-d) which capped localization at ±25% of image per quadrant.
 
-Both models return corners in canonical TL→TR→BR→BL order (sorted by
-sort_corners_canonical convention — CW winding, shortest edge at 0→1).
+All models return corners in canonical TL→TR→BR→BL order.
 
-Loss (TinyCornerCNN):
-  L = BCEWithLogitsLoss(presence)
-    + λ_c * SmoothL1Loss(corners[positives], direct canonical order)
-    + λ_h * BCEWithLogitsLoss(heatmaps[positives], gaussian_targets)
-  λ_c = 5.0, λ_h = 10.0 by default.
+Loss (TinyCornerCNN / TinyCornerCNNDirect):
+  TinyCornerCNN:      L = BCE(presence) + λ_c * SmoothL1(corners) + λ_h * BCE(heatmaps)
+  TinyCornerCNNDirect: L = BCE(presence) + λ_c * SmoothL1(corners)  [no heatmap term]
 """
 from __future__ import annotations
 
@@ -195,21 +199,75 @@ class TinyCornerCNN(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# MobileViTCornerDetector — accuracy ceiling / transfer-learning ablation
+# TinyCornerCNNDirect — same encoder, direct regression head (diagnostic)
+# ---------------------------------------------------------------------------
+
+class TinyCornerCNNDirect(nn.Module):
+    """~49K-parameter direct-regression corner detector.
+
+    Same depthwise-separable CNN encoder as TinyCornerCNN, but replaces the
+    soft-argmax heatmap head with a direct spatial regression head.
+
+    Purpose: diagnostic run to isolate whether soft-argmax gradient collapse
+    was the *only* failure mode, or whether the 48K encoder also lacks capacity.
+    If this breaks the center-prediction baseline, the soft-argmax was the
+    sole culprit. If it also gets stuck, backbone capacity is also a factor.
+
+    Input:  (B, 3, 448, 448) float32, ImageNet-normalised.
+    Output: (corners (B, 8), presence (B,))
+      corners:  flat (x0,y0,…,x3,y3) TL/TR/BR/BL in [0, 1]
+      presence: raw logit (B,)
+    """
+
+    def __init__(self, dropout: float = 0.3) -> None:
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 16, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(16), nn.ReLU6(inplace=True),
+            _dw_block(16, 32, stride=2),
+            _dw_block(32, 64, stride=2),
+            _dw_block(64, 64, stride=1),
+            _dw_block(64, 128, stride=2),
+            _dw_block(128, 128, stride=1),
+        )
+        # → (B, 128, 28, 28) at 448×448 input
+
+        # Pool to 2×2 to preserve coarse quadrant structure (same design as
+        # MobileViTCornerDetector) before flattening to a fixed-size vector.
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(2),   # (B, 128, 2, 2)
+            nn.Flatten(),              # (B, 512)
+            nn.LayerNorm(512),
+            nn.Linear(512, 64),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 9),          # 8 corner coords + 1 presence logit
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        feats = self.encoder(x)
+        out   = self.head(feats)       # (B, 9)
+        return out[:, :8], out[:, 8]
+
+
+# ---------------------------------------------------------------------------
+# MobileViTCornerDetector — primary path forward
 # ---------------------------------------------------------------------------
 
 class MobileViTCornerDetector(nn.Module):
     """MobileViT-XXS backbone + spatial-aware direct regression head.
 
-    951K parameters backbone, 3.6 MB fp32.  Same backbone as the card-ID
-    model — backbone weights can be seeded from a pretrained ArcFace
-    checkpoint via load_card_id_checkpoint().
+    951K parameters backbone, 3.6 MB fp32.  ImageNet pretrained weights only
+    — do NOT seed from ArcFace card-ID checkpoints, which are trained on
+    aligned card internals and encode fine artwork/typography features rather
+    than the card-border features needed here.
 
     Uses forward_features() to obtain the final spatial feature map
     (B, 320, H/32, W/32) before global pooling, then pools to 4×4 to
     retain coarse spatial information before regressing corner coordinates.
-    This preserves the spatial layout of features (which quadrant of the
-    image each feature came from) while keeping the head lightweight.
+    The 4×4 pool (5120-d) preserves more spatial resolution than the earlier
+    2×2 design (1280-d), which capped localization precision at roughly ±25%
+    of the image dimension per quadrant.
 
     At 448×448 input: backbone outputs (B, 320, 14, 14) → pool to (B, 320, 4, 4)
     → flatten to (B, 5120) → head → (B, 9).
@@ -227,14 +285,14 @@ class MobileViTCornerDetector(nn.Module):
             "mobilevit_xxs", pretrained=pretrained_backbone, num_classes=0
         )
         # forward_features() returns (B, 320, H/32, W/32).
-        # Pool to 2×2 — divides 14×14 (448/32) evenly and captures 4-quadrant
-        # spatial structure that maps naturally onto TL/TR/BL/BR corners.
+        # Pool to 4×4 — 14×14 (448/32) divides evenly, captures 16-region
+        # spatial structure for improved localization resolution.
         # Note: MPS requires input size divisible by output size for adaptive pool.
-        spatial_feat_dim = 320 * 2 * 2  # 1280
+        spatial_feat_dim = 320 * 4 * 4  # 5120
 
-        self.spatial_pool = nn.AdaptiveAvgPool2d(2)
+        self.spatial_pool = nn.AdaptiveAvgPool2d(4)
         self.head = nn.Sequential(
-            nn.Flatten(),                             # (B, 1280)
+            nn.Flatten(),                             # (B, 5120)
             nn.LayerNorm(spatial_feat_dim),
             nn.Linear(spatial_feat_dim, 256),
             nn.GELU(),
