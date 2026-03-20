@@ -58,7 +58,9 @@ MARGIN = 5
 MIN_AREA_PCT = 0.05
 MAX_AREA_PCT = 0.95
 LOWE_RATIO = 0.75
-REF_W, REF_H = 745, 1040       # Pokemon cards are close to the same aspect ratio as MTG
+# NOTE: no global REF_W/REF_H — Pokemon catalog images vary in size (734×1024
+# for most sets, different for full-art / special-illustration rares, etc.).
+# Each gallery entry stores ref_w / ref_h read from the actual catalog image.
 MIN_QUAD_ANGLE = 15.0
 
 
@@ -108,8 +110,12 @@ def _pokemon_image_path(card_id: str) -> Path:
 
 
 def homography_corners(frame_kps, ref_kps, frame_descs, ref_descs,
-                       frame_h, frame_w, flann):
-    """Returns (scene_corners 4×1×2, inlier_count) or (None, 0)."""
+                       frame_h, frame_w, flann, ref_w: int, ref_h: int):
+    """Returns (scene_corners 4×1×2, inlier_count) or (None, 0).
+
+    ref_w / ref_h are the actual pixel dimensions of the reference image so
+    that the projected corners exactly cover the card and nothing more.
+    """
     try:
         matches = flann.knnMatch(frame_descs, ref_descs, k=2)
     except Exception:
@@ -124,7 +130,7 @@ def homography_corners(frame_kps, ref_kps, frame_descs, ref_descs,
     if M is None:
         return None, 0
 
-    ref_corners = np.float32([[0,0],[REF_W,0],[REF_W,REF_H],[0,REF_H]]).reshape(-1,1,2)
+    ref_corners = np.float32([[0,0],[ref_w,0],[ref_w,ref_h],[0,ref_h]]).reshape(-1,1,2)
     scene_corners = cv2.perspectiveTransform(ref_corners, M)
 
     margin = 5
@@ -167,11 +173,11 @@ def compute_phash(img_bgr):
     return imagehash.phash(Image.fromarray(rgb))
 
 
-def dewarp(frame, scene_corners):
-    dst = np.float32([[0,0],[REF_W,0],[REF_W,REF_H],[0,REF_H]])
+def dewarp(frame, scene_corners, ref_w: int, ref_h: int):
+    dst = np.float32([[0,0],[ref_w,0],[ref_w,ref_h],[0,ref_h]])
     src = scene_corners.reshape(4, 2).astype(np.float32)
     M = cv2.getPerspectiveTransform(src, dst)
-    return cv2.warpPerspective(frame, M, (REF_W, REF_H))
+    return cv2.warpPerspective(frame, M, (ref_w, ref_h))
 
 
 # ---------------------------------------------------------------------------
@@ -200,18 +206,26 @@ def load_gallery(
         for sid, npz_path in pbar:
             card_id = npz_path.stem
             kp_array, descs = load_sift_features(npz_path)
+            ref_img_path = _pokemon_image_path(card_id)
+            # Read actual reference image dimensions — Pokemon catalog images
+            # vary in size (734×1024 standard, different for special-art cards).
+            # Using per-card dimensions prevents a spurious border in the dewarp
+            # output when REF_W/REF_H doesn't match the catalog image.
+            ref_w, ref_h = 734, 1024  # safe fallback
+            ref_img = cv2.imread(str(ref_img_path))
+            if ref_img is not None:
+                ref_h, ref_w = ref_img.shape[:2]
             ref_phash = None
-            if _PHASH_AVAILABLE:
-                ref_img_path = _pokemon_image_path(card_id)
-                ref_img = cv2.imread(str(ref_img_path))
-                if ref_img is not None:
-                    ref_phash = compute_phash(ref_img)
+            if _PHASH_AVAILABLE and ref_img is not None:
+                ref_phash = compute_phash(ref_img)
             gallery.append({
                 "card_id":   card_id,
                 "set_code":  sid,
                 "kps":       _kp_array_to_kps(kp_array),
                 "descs":     descs,
                 "ref_phash": ref_phash,
+                "ref_w":     ref_w,
+                "ref_h":     ref_h,
             })
 
     descs_list: list[np.ndarray] = []
@@ -305,7 +319,8 @@ def _match_batch(
 
             best = gallery[best_i]
             scene_corners, inliers = homography_corners(
-                frame_kps, best["kps"], frame_descs, best["descs"], frame_h, frame_w, homography_flann
+                frame_kps, best["kps"], frame_descs, best["descs"], frame_h, frame_w,
+                homography_flann, best["ref_w"], best["ref_h"],
             )
             if scene_corners is None:
                 discarded += 1
@@ -315,7 +330,7 @@ def _match_batch(
                 discarded += 1
                 continue
 
-            dewarped = dewarp(frame, scene_corners)
+            dewarped = dewarp(frame, scene_corners, best["ref_w"], best["ref_h"])
             phash_dist: int | None = None
             if _PHASH_AVAILABLE and best["ref_phash"] is not None:
                 match_phash = compute_phash(dewarped)
