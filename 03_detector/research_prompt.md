@@ -69,7 +69,9 @@ All image paths are relative to the data root (`/Volumes/carbonite/claw/data/ccg
 
 ---
 
-## Current Architecture: TinyCornerCNN
+## Architectures Tried
+
+### Architecture A: TinyCornerCNN (soft-argmax heatmap head)
 
 A purpose-built ~48K parameter depthwise-separable CNN targeting edge deployment.
 
@@ -112,9 +114,43 @@ L = BCE(presence) + λ_c * SmoothL1(corners, positives_only) + λ_h * BCE(heatma
 - `λ_h` = configurable (heatmap auxiliary supervision weight)
 - Gaussian heatmap targets: σ=2.0 heatmap pixels (~32px at input scale)
 
+**Status: conclusively stuck** — see run history below.
+
+### Architecture B: MobileViTCornerDetector (spatial regression head)
+
+MobileViT-XXS backbone (951K params, 3.6 MB fp32) + spatial-aware direct regression head.
+Same backbone as the card-ID embedding model, so weights can be seeded from a pretrained
+ArcFace checkpoint. No heatmaps — direct coordinate regression from pooled spatial features.
+
+**Architecture:**
+```
+Input: (B, 3, 448, 448) ImageNet-normalized
+
+Backbone: MobileViT-XXS (timm)
+  forward_features(x) → (B, 320, 14, 14)  [448/32 = 14]
+
+Spatial pool:
+  AdaptiveAvgPool2d(2) → (B, 320, 2, 2)
+  Flatten → (B, 1280)
+
+Regression head:
+  LayerNorm(1280) → Linear(1280→256) → GELU → Dropout(0.3) → Linear(256→9)
+  → corners[:8] = (B, 8) corner coords, out[8] = (B,) presence logit
+```
+
+The 2×2 spatial pool preserves coarse quadrant structure (top-left, top-right, bottom-left,
+bottom-right), which is critical for corner regression — without it, the model loses all
+spatial information before predicting corner positions.
+
+Backbone can be seeded from:
+- ImageNet pretrained weights (timm default, `--seed imagenet`)
+- ArcFace card-ID checkpoint (`--seed-checkpoint path/to/checkpoint.pt`, loads `backbone.*` keys)
+
 **Run naming convention:**
-`{backbone}_{head}_{loss_cfg}_{input}_{data_filter}`
-e.g. `tcnn_softargmax_lc5lh1_img448_ph10`
+`{backbone}_{head}_{loss_cfg}_{input}_{data_filter}_{seed}_{lr_cfg}`
+e.g. `mvit_spatialreg_lc5_img448_ph10_seedin_blr10`
+- `seedin` = ImageNet seed, `seedcid` = card-ID ArcFace seed
+- `blr10` = backbone LR at 10% of head LR (differential LR)
 
 ---
 
@@ -127,20 +163,40 @@ given that pack-opening cards typically fill most of the frame). Lower is better
 
 ### Run History
 
+**Architecture A — TinyCornerCNN (soft-argmax):**
+
 | run_name | bs | lr | epochs | e1 val_cpe | final val_cpe | verdict |
 |---|---|---|---|---|---|---|
-| `lc5lh10_img448_ph20` | 128 | 4e-3 | 8 | 0.611 | 0.634 | stuck at baseline |
-| `lc5lh10_img448_ph20` | 128 | 1e-3 | 5 | 0.596 | 0.642 | stuck at baseline |
-| `lc5lh0_img448_ph20`  | 32  | 1e-3 | 3 | 0.626 | 0.638 | stuck at baseline |
-| `lc5lh0_img448_ph10`  | 32  | 1e-3 | **40** | 0.597 | **0.649** | conclusively stuck |
-| `lc5lh1_img448_ph10`  | 32  | 1e-3 | 3 | 0.640 | 0.643 | too early to tell |
+| `tcnn_softargmax_lc5lh10_img448_ph20` | 128 | 4e-3 | 8 | 0.611 | 0.634 | stuck at baseline |
+| `tcnn_softargmax_lc5lh10_img448_ph20` | 128 | 1e-3 | 5 | 0.596 | 0.642 | stuck at baseline |
+| `tcnn_softargmax_lc5lh0_img448_ph20`  | 32  | 1e-3 | 3 | 0.626 | 0.638 | stuck at baseline |
+| `tcnn_softargmax_lc5lh0_img448_ph10`  | 32  | 1e-3 | **40** | 0.597 | **0.649** | conclusively stuck |
+| `tcnn_softargmax_lc5lh1_img448_ph10`  | 32  | 1e-3 | **9** | 0.640 | 0.666 | stuck at baseline |
 
-**Key observations:**
-- `val_cpe` ≈ 0.63–0.65 throughout — essentially the "predict image center" baseline
+**Architecture A key observations:**
+- `val_cpe` ≈ 0.63–0.65 throughout all runs — essentially the "predict image center" baseline
 - `train_loss` drops nicely (e.g. 0.27→0.083 over 40 epochs for lh0/ph10) — the model
-  IS learning something, but it doesn't generalize to corner localization
+  IS learning something on the training set, but it doesn't generalize to corner localization
 - `val_pres_acc` reaches 0.994–0.997 early — presence detection is working fine
 - `test_cpe` (clint domain) stays at ~0.35–0.37 across all runs (center prediction)
+- Increasing `λ_h` (heatmap weight) or decreasing it or removing it entirely: no difference
+
+**Architecture B — MobileViTCornerDetector (spatial regression):**
+
+| run_name | seed | backbone_lr | epochs | e1 val_cpe | final val_cpe | test_cpe | verdict |
+|---|---|---|---|---|---|---|---|
+| `mvit_spatialreg_lc5_img448_ph10_seedcid` | ArcFace | 1e-3 (full) | 4 | **0.571** | 0.662 | 0.534 | breaks center; catastrophic forgetting |
+| `mvit_spatialreg_lc5_img448_ph10_seedin_blr10` | ImageNet | 1e-4 (10%) | 1 | — | — | — | killed (memory); **needs restart** |
+
+**Architecture B key observations:**
+- `seedcid` run broke below the center-prediction baseline on **epoch 1** (val_cpe 0.571 vs.
+  0.635 for TinyCornerCNN) — the pretrained backbone provides immediately useful features
+- By epoch 4 without differential LR: `test_pres_acc` collapses to **0.131** (catastrophic
+  forgetting — backbone overwrites pretrained features at lr=1e-3)
+- `test_cpe` rose from 0.384 (e1) to 0.534 (e4) as the backbone degraded
+- Fix implemented: `--backbone-lr-scale 0.1` (`blr10`) — backbone at 1e-4, head at 1e-3.
+  The `seedin_blr10` run (ImageNet seed + differential LR) was killed at epoch 1 due to
+  memory pressure before producing useful results. **This is the current frontier.**
 
 ### Why Each Change Was Made
 
@@ -161,12 +217,26 @@ on val_cpe convergence behavior.
 same wall-clock throughput on Apple MPS (~4 b/s, ~284 img/s regardless of batch size).
 No effect on the fundamental stuckness.
 
-**lh=1 (current run):** Trying a small heatmap auxiliary signal — enough to give spatial
-structure to the heatmaps without overwhelming coordinate regression.
+**lh=1:** Tried a small heatmap auxiliary signal — enough to give spatial structure to the
+heatmaps without overwhelming coordinate regression. Result: still stuck at val_cpe 0.64–0.67
+over 9 epochs. Conclusively, soft-argmax + TinyCornerCNN cannot break the center-prediction
+local minimum regardless of the heatmap loss weight.
+
+**MobileViT spatial regression (`seedcid`):** Replaced the CNN backbone with MobileViT-XXS
+seeded from the card-ID ArcFace checkpoint. Replaced soft-argmax with direct spatial
+regression (pool to 2×2 → flatten → FC → 9 outputs). **This immediately broke below center
+baseline** (e1 val_cpe 0.571). However, training at full lr=1e-3 caused catastrophic forgetting
+of the pretrained backbone features by epoch 4 (test_pres_acc → 0.131).
+
+**MobileViT spatial regression (`seedin_blr10`):** ImageNet seed + differential LR (backbone
+at 10% of head LR via `--backbone-lr-scale 0.1`). This is the architecturally correct fix for
+catastrophic forgetting. Run was killed at epoch 1 due to memory pressure — no results yet.
 
 ---
 
-## Root Cause Hypothesis
+## Root Cause Diagnosis
+
+### TinyCornerCNN (Architecture A): confirmed soft-argmax gradient collapse
 
 The soft-argmax architecture has a **sparse supervision / diffuse gradient problem**:
 
@@ -181,10 +251,23 @@ outputting (0.5, 0.5). The model converges to this local minimum and stays there
 
 With lh=10, the heatmap BCE loss provides explicit peak supervision, but at 784× the
 magnitude of a single-pixel contribution, it drowns out the coordinate regression term.
-The model learns to produce Gaussian-shaped heatmaps but the regression gradient can't
-guide them to the right location.
+Neither lh=0, lh=1, nor lh=10 escape the local minimum over 40 epochs. The TinyCornerCNN
+soft-argmax architecture is **conclusively unable** to learn corner localization from this
+training data.
 
-Neither extreme (lh=0 or lh=10) works. lh=1 is in progress.
+### MobileViTCornerDetector (Architecture B): promising but needs fine-tuning stabilization
+
+Replacing the backbone with pretrained MobileViT-XXS + direct spatial regression head
+**immediately breaks the center-prediction local minimum** (e1 val_cpe 0.571). The pretrained
+features already encode spatial structure sufficient to distinguish image quadrants.
+
+The open problem is **catastrophic forgetting**: training at full backbone lr=1e-3 degrades
+the pretrained features by epoch 4. Differential LR (`--backbone-lr-scale 0.1`) is the
+implemented fix, but the corrected run was killed before producing results.
+
+**The key unanswered question is no longer "can this learn at all" — it's "what is the right
+architecture and training recipe to stabilize MobileViT fine-tuning for keypoint regression,
+and is direct spatial regression the right output head or should we add a heatmap branch?"**
 
 ---
 
@@ -205,9 +288,16 @@ Neither extreme (lh=0 or lh=10) works. lh=1 is in progress.
 
 We are looking for recommendations on:
 
-1. **Is soft-argmax the right output head for this task?** Are there better differentiable
-   localization approaches for a tiny model? (e.g. direct regression, coordinate convolution,
-   DSNt/DSNT, integral pose regression variants, etc.)
+1. **What is the right output head for MobileViT spatial regression?** Soft-argmax on
+   TinyCornerCNN is conclusively stuck. Direct spatial regression on MobileViT backbone
+   breaks the center-prediction local minimum immediately (e1 val_cpe 0.571 vs. 0.635).
+   The question now is: given a pretrained MobileViT-XXS backbone, is direct regression
+   from pooled spatial features (current approach: pool to 2×2 → flatten → FC → 8 coords)
+   the best head design? Or would a heatmap head on top of the MobileViT features work
+   better (e.g. upsample the 14×14 feature map → 4-channel heatmap → soft-argmax)?
+   Trade-offs: heatmap head gives occlusion confidence estimates but adds complexity;
+   direct regression is simpler and already works on epoch 1. What does the literature
+   recommend for keypoint regression heads on top of transformer backbones?
 
 2. **Training strategies for heatmap-based localization with sparse peaks:** What is
    the state of the art for supervising heatmap localization models? Is there a better
@@ -223,8 +313,9 @@ We are looking for recommendations on:
    - Classical + learned hybrid approaches
 
 4. **Data augmentation strategies** specific to corner detection that we may be missing.
-   We currently do: horizontal flip (with corner reorder), rotation ±30° + 90°/180°/270°,
-   ColorJitter, RandomGrayscale, GaussianBlur.
+   We currently do: rotation ±30° + 90°/180°/270°, ColorJitter, RandomGrayscale, GaussianBlur.
+   Horizontal flip was deliberately excluded (MTG cards have asymmetric text/art — mirrored
+   cards do not exist in the real world).
 
 5. **Is there a canonical "card corner detection" solution** in the wild (mobile scanning
    apps, document scanners) that we should be adapting rather than training from scratch?
