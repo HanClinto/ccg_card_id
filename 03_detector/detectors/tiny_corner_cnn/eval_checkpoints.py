@@ -39,7 +39,7 @@ from train import (
     _val_cpe,
     _val_presence_acc,
     build_ref_phash_dict,
-    batch_phash_hits,
+    batch_phash_dists,
     pick_device,
 )
 
@@ -50,7 +50,6 @@ def eval_checkpoint(
     test_dl: DataLoader | None,
     ref_phash_dict: dict,
     device: torch.device,
-    phash_threshold: int = 10,
 ) -> dict:
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     arch = ckpt.get("arch", "mobilevit")
@@ -68,7 +67,7 @@ def eval_checkpoint(
 
     def _run_dl(dl):
         pc_all, tc_all, pp_all, tp_all = [], [], [], []
-        ph_ok = ph_total = 0
+        ph_sum = ph_total = 0
         with torch.no_grad():
             for batch in tqdm(dl, desc=f"  eval {ckpt_path.name}", leave=False):
                 images   = batch["image"].to(device)
@@ -82,19 +81,18 @@ def eval_checkpoint(
                 pp_all.append(pp.cpu()); tp_all.append(presence.cpu())
 
                 if ref_phash_dict and card_ids:
-                    n_ok, n_tot = batch_phash_hits(
-                        pc, images, card_ids, presence.bool(), ref_phash_dict, phash_threshold,
+                    s, n = batch_phash_dists(
+                        pc, images, card_ids, presence.bool(), ref_phash_dict,
                     )
-                    ph_ok += n_ok; ph_total += n_tot
+                    ph_sum += s; ph_total += n
 
         pc_cat = torch.cat(pc_all); tc_cat = torch.cat(tc_all)
         pp_cat = torch.cat(pp_all); tp_cat = torch.cat(tp_all)
         return {
-            "cpe":       _val_cpe(pc_cat, tc_cat, tp_cat.bool()),
-            "pres_acc":  _val_presence_acc(pp_cat, tp_cat),
-            "phash_acc": ph_ok / ph_total if ph_total > 0 else None,
-            "ph_ok":     ph_ok,
-            "ph_total":  ph_total,
+            "cpe":             _val_cpe(pc_cat, tc_cat, tp_cat.bool()),
+            "pres_acc":        _val_presence_acc(pp_cat, tp_cat),
+            "mean_phash_dist": ph_sum / ph_total if ph_total > 0 else None,
+            "ph_total":        ph_total,
         }
 
     val_metrics  = _run_dl(val_dl)
@@ -111,8 +109,6 @@ def main() -> None:
                    default=cfg.fast_data_dir if cfg.fast_data_dir.exists() else None)
     p.add_argument("--max-phash-dist", type=int, default=10,
                    help="Training data quality filter (default: 10)")
-    p.add_argument("--phash-threshold", type=int, default=10,
-                   help="pHash distance threshold for 'usable dewarp' (default: 10)")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--cpu", action="store_true")
@@ -152,8 +148,8 @@ def main() -> None:
     # Sort checkpoints by epoch number if names contain digits
     ckpt_paths = sorted(args.checkpoints, key=lambda p: p.stem)
 
-    print(f"{'Checkpoint':<55} {'Ep':>3}  {'val_cpe':>8}  {'val_ph':>7}  {'test_cpe':>9}  {'test_ph':>8}")
-    print("-" * 100)
+    print(f"{'Checkpoint':<55} {'Ep':>3}  {'val_cpe':>8}  {'val_phash_dist':>14}  {'test_cpe':>9}  {'test_phash_dist':>15}")
+    print("-" * 115)
 
     for ckpt_path in ckpt_paths:
         if not ckpt_path.exists():
@@ -164,19 +160,19 @@ def main() -> None:
             continue
 
         result = eval_checkpoint(
-            ckpt_path, val_dl, test_dl, ref_phash_dict, device, args.phash_threshold,
+            ckpt_path, val_dl, test_dl, ref_phash_dict, device,
         )
         ep = result["epoch"]
         v  = result["val"]
         t  = result.get("test", {})
 
-        val_ph_str  = f"{v['phash_acc']:.3f} ({v['ph_ok']}/{v['ph_total']})" if v.get("phash_acc") is not None else "  n/a"
+        val_ph_str  = f"{v['mean_phash_dist']:.1f} (n={v['ph_total']})" if v.get("mean_phash_dist") is not None else "n/a"
         test_cpe_s  = f"{t['cpe']:.4f}" if t.get("cpe") is not None else "     n/a"
-        test_ph_str = f"{t['phash_acc']:.3f} ({t['ph_ok']}/{t['ph_total']})" if t.get("phash_acc") is not None else "  n/a"
+        test_ph_str = f"{t['mean_phash_dist']:.1f} (n={t['ph_total']})" if t.get("mean_phash_dist") is not None else "n/a"
 
         print(
-            f"{ckpt_path.name:<55} {ep:>3}  {v['cpe']:>8.4f}  {val_ph_str:>7}  "
-            f"{test_cpe_s:>9}  {test_ph_str:>8}"
+            f"{ckpt_path.name:<55} {ep:>3}  {v['cpe']:>8.4f}  {val_ph_str:>14}  "
+            f"{test_cpe_s:>9}  {test_ph_str:>15}"
         )
 
 

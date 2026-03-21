@@ -83,7 +83,7 @@ def main() -> None:
     print(f"Total frames to cache: {len(all_rows):,}")
 
     # Build (src, dst) pairs — skip already-cached files.
-    # Cache path uses frames_448/ instead of frames/ to make the resolution explicit.
+    # Cache path uses frames_384/ instead of frames/ to make the resolution explicit.
     pairs: list[tuple[Path, Path]] = []
     for row in all_rows:
         src     = data_dir / row["img_path"]
@@ -115,7 +115,7 @@ def main() -> None:
     # Estimate cache size
     total_bytes = sum(
         (fast_data_dir / row["img_path"].replace(
-            "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+            "datasets/packopening/frames/", "datasets/packopening/frames_384/", 1
         )).stat().st_size
         for row in all_rows[:1000]
         if (fast_data_dir / row["img_path"].replace(
