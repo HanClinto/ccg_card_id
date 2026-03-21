@@ -139,6 +139,36 @@ def _val_presence_acc(pred_logit: torch.Tensor, true_presence: torch.Tensor) -> 
     return float((pred_label == true_presence).float().mean())
 
 
+def _quad_iou(pred: "np.ndarray", true: "np.ndarray") -> float:
+    """IoU between two convex quadrilaterals (each shape (4, 2), normalized coords).
+
+    Uses cv2.intersectConvexConvex.  Returns 0.0 if either polygon has zero area.
+    """
+    import cv2
+    import numpy as np
+    p = pred.astype(np.float32)
+    t = true.astype(np.float32)
+    retval, inter_pts = cv2.intersectConvexConvex(p, t)
+    if retval == 0 or inter_pts is None or len(inter_pts) == 0:
+        return 0.0
+    inter = float(cv2.contourArea(inter_pts))
+    area_p = float(cv2.contourArea(p))
+    area_t = float(cv2.contourArea(t))
+    union = area_p + area_t - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _val_iou(pred_corners: torch.Tensor, true_corners: torch.Tensor, mask: torch.Tensor) -> float:
+    """Mean quadrilateral IoU on positive examples (normalized coords, so scale-invariant)."""
+    if not mask.any():
+        return 0.0
+    import numpy as np
+    pc = pred_corners[mask].detach().cpu().numpy().reshape(-1, 4, 2)
+    tc = true_corners[mask].detach().cpu().numpy().reshape(-1, 4, 2)
+    ious = [_quad_iou(p, t) for p, t in zip(pc, tc)]
+    return float(np.mean(ious))
+
+
 # ---------------------------------------------------------------------------
 # pHash-based dewarp quality metric
 # ---------------------------------------------------------------------------
@@ -366,9 +396,9 @@ _HISTORY_COLS = [
     "run_name", "epoch", "timestamp",
     "arch", "lambda_corners", "lambda_heatmap", "batch_size", "lr_start",
     "train_source", "max_phash_dist",
-    "train_loss", "val_loss", "val_cpe", "val_pres_acc",
+    "train_loss", "val_loss", "val_cpe", "val_iou", "val_pres_acc",
     "val_mean_phash_dist",
-    "test_cpe", "test_pres_acc", "test_mean_phash_dist",
+    "test_cpe", "test_iou", "test_pres_acc", "test_mean_phash_dist",
     "lr_end", "checkpoint_saved",
 ]
 
@@ -381,9 +411,11 @@ def _append_history_row(
     train_loss: float,
     val_loss: float,
     val_cpe: float,
+    val_iou: float,
     val_pres_acc: float,
     val_mean_phash_dist: float | None,
     test_cpe: float | None,
+    test_iou: float | None,
     test_pres_acc: float | None,
     test_mean_phash_dist: float | None,
     lr_end: float,
@@ -410,9 +442,11 @@ def _append_history_row(
             "train_loss":            f"{train_loss:.6f}",
             "val_loss":              f"{val_loss:.6f}",
             "val_cpe":               f"{val_cpe:.6f}",
+            "val_iou":               f"{val_iou:.6f}",
             "val_pres_acc":          f"{val_pres_acc:.6f}",
             "val_mean_phash_dist":   f"{val_mean_phash_dist:.2f}" if val_mean_phash_dist is not None else "",
             "test_cpe":              f"{test_cpe:.6f}" if test_cpe is not None else "",
+            "test_iou":              f"{test_iou:.6f}" if test_iou is not None else "",
             "test_pres_acc":         f"{test_pres_acc:.6f}" if test_pres_acc is not None else "",
             "test_mean_phash_dist":  f"{test_mean_phash_dist:.2f}" if test_mean_phash_dist is not None else "",
             "lr_end":                f"{lr_end:.6e}",
@@ -645,12 +679,13 @@ def run(args: argparse.Namespace) -> None:
         tp_all = torch.cat(all_true_presence)
 
         cpe                 = _val_cpe(pc_all, tc_all, tp_all.bool())
+        iou                 = _val_iou(pc_all, tc_all, tp_all.bool())
         pres_acc            = _val_presence_acc(pp_all, tp_all)
         val_mean_phash_dist = val_ph_sum / val_ph_total if val_ph_total > 0 else None
         cur_lr              = optim.param_groups[0]["lr"]
 
         # Optionally evaluate on clint test set (domain generalization)
-        test_cpe = test_pres_acc = test_mean_phash_dist = None
+        test_cpe = test_iou = test_pres_acc = test_mean_phash_dist = None
         if test_dl is not None:
             model.eval()
             t_pc, t_tc, t_pp, t_tp = [], [], [], []
@@ -674,20 +709,22 @@ def run(args: argparse.Namespace) -> None:
             t_pc_all = torch.cat(t_pc); t_tc_all = torch.cat(t_tc)
             t_pp_all = torch.cat(t_pp); t_tp_all = torch.cat(t_tp)
             test_cpe            = _val_cpe(t_pc_all, t_tc_all, t_tp_all.bool())
+            test_iou            = _val_iou(t_pc_all, t_tc_all, t_tp_all.bool())
             test_pres_acc       = _val_presence_acc(t_pp_all, t_tp_all)
             test_mean_phash_dist = t_ph_sum / t_ph_total if t_ph_total > 0 else None
 
-        val_ph_str  = f"  val_mean_phash_dist={val_mean_phash_dist:.1f}" if val_mean_phash_dist is not None else ""
+        val_ph_str  = f"  val_phash_dist={val_mean_phash_dist:.1f}" if val_mean_phash_dist is not None else ""
         test_str    = ""
         if test_cpe is not None:
-            test_str = f"  test_cpe={test_cpe:.4f}  test_pres_acc={test_pres_acc:.3f}"
+            test_str = f"  test_cpe={test_cpe:.4f}  test_iou={test_iou:.3f}  test_pres_acc={test_pres_acc:.3f}"
             if test_mean_phash_dist is not None:
-                test_str += f"  test_mean_phash_dist={test_mean_phash_dist:.1f}"
+                test_str += f"  test_phash_dist={test_mean_phash_dist:.1f}"
         print(
             f"epoch={epoch:3d}  "
             f"train_loss={train_loss:.4f}  "
             f"val_loss={val_loss:.4f}  "
             f"val_cpe={cpe:.4f}  "
+            f"val_iou={iou:.3f}  "
             f"val_pres_acc={pres_acc:.3f}"
             f"{val_ph_str}"
             f"{test_str}  "
@@ -708,8 +745,8 @@ def run(args: argparse.Namespace) -> None:
 
         _append_history_row(
             history_csv, run_name, epoch, args,
-            train_loss, val_loss, cpe, pres_acc, val_mean_phash_dist,
-            test_cpe, test_pres_acc, test_mean_phash_dist,
+            train_loss, val_loss, cpe, iou, pres_acc, val_mean_phash_dist,
+            test_cpe, test_iou, test_pres_acc, test_mean_phash_dist,
             lr_end=cur_lr,
             checkpoint_saved=saved_epoch_ckpt,
         )

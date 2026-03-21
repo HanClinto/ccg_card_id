@@ -37,6 +37,7 @@ from dataset import (
 )
 from train import (
     _val_cpe,
+    _val_iou,
     _val_presence_acc,
     build_ref_phash_dict,
     batch_phash_dists,
@@ -90,6 +91,7 @@ def eval_checkpoint(
         pp_cat = torch.cat(pp_all); tp_cat = torch.cat(tp_all)
         return {
             "cpe":             _val_cpe(pc_cat, tc_cat, tp_cat.bool()),
+            "iou":             _val_iou(pc_cat, tc_cat, tp_cat.bool()),
             "pres_acc":        _val_presence_acc(pp_cat, tp_cat),
             "mean_phash_dist": ph_sum / ph_total if ph_total > 0 else None,
             "ph_total":        ph_total,
@@ -148,8 +150,8 @@ def main() -> None:
     # Sort checkpoints by epoch number if names contain digits
     ckpt_paths = sorted(args.checkpoints, key=lambda p: p.stem)
 
-    print(f"{'Checkpoint':<55} {'Ep':>3}  {'val_cpe':>8}  {'val_phash_dist':>14}  {'test_cpe':>9}  {'test_phash_dist':>15}")
-    print("-" * 115)
+    print(f"{'Checkpoint':<55} {'Ep':>3}  {'val_cpe':>8}  {'val_iou':>7}  {'val_phash':>9}  {'test_cpe':>8}  {'test_iou':>7}  {'test_phash':>10}")
+    print("-" * 125)
 
     for ckpt_path in ckpt_paths:
         if not ckpt_path.exists():
@@ -166,13 +168,14 @@ def main() -> None:
         v  = result["val"]
         t  = result.get("test", {})
 
-        val_ph_str  = f"{v['mean_phash_dist']:.1f} (n={v['ph_total']})" if v.get("mean_phash_dist") is not None else "n/a"
-        test_cpe_s  = f"{t['cpe']:.4f}" if t.get("cpe") is not None else "     n/a"
-        test_ph_str = f"{t['mean_phash_dist']:.1f} (n={t['ph_total']})" if t.get("mean_phash_dist") is not None else "n/a"
+        val_ph_str   = f"{v['mean_phash_dist']:.1f}" if v.get("mean_phash_dist") is not None else "n/a"
+        test_cpe_s   = f"{t['cpe']:.4f}" if t.get("cpe") is not None else "    n/a"
+        test_iou_s   = f"{t['iou']:.3f}" if t.get("iou") is not None else "   n/a"
+        test_ph_str  = f"{t['mean_phash_dist']:.1f}" if t.get("mean_phash_dist") is not None else "n/a"
 
         print(
-            f"{ckpt_path.name:<55} {ep:>3}  {v['cpe']:>8.4f}  {val_ph_str:>14}  "
-            f"{test_cpe_s:>9}  {test_ph_str:>15}"
+            f"{ckpt_path.name:<55} {ep:>3}  {v['cpe']:>8.4f}  {v['iou']:>7.3f}  {val_ph_str:>9}  "
+            f"{test_cpe_s:>8}  {test_iou_s:>7}  {test_ph_str:>10}"
         )
 
 
