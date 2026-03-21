@@ -53,7 +53,7 @@ from pathlib import Path
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD  = [0.229, 0.224, 0.225]
-INPUT_SIZE     = 448
+INPUT_SIZE     = 384
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +321,7 @@ class CornerDataset(Dataset):
             if self.fast_data_dir is not None:
                 # Cache stores frames at frames_448/ (size-explicit) rather than frames/
                 fast_rel = rel.replace(
-                    "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+                    "datasets/packopening/frames/", "datasets/packopening/frames_384/", 1
                 )
                 cached = self.fast_data_dir / fast_rel
                 if cached.exists():

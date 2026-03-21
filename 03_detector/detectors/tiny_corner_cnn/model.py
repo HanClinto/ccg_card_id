@@ -264,12 +264,14 @@ class MobileViTCornerDetector(nn.Module):
 
     Uses forward_features() to obtain the final spatial feature map
     (B, 320, H/32, W/32) before global pooling, then pools to 4×4 to
-    retain coarse spatial information before regressing corner coordinates.
-    The 4×4 pool (5120-d) preserves more spatial resolution than the earlier
-    2×2 design (1280-d), which capped localization precision at roughly ±25%
-    of the image dimension per quadrant.
+    retain richer quadrant-level spatial information before regressing
+    corner coordinates.
 
-    At 448×448 input: backbone outputs (B, 320, 14, 14) → pool to (B, 320, 4, 4)
+    Input must be sized so that H/32 is divisible by 4 (i.e. input
+    divisible by 128).  Recommended: 384×384 (feature map 12×12 → pool
+    to 4×4, 12÷4=3 ✓).  448×448 does NOT work (14÷4=3.5 ✗ on MPS).
+
+    At 384×384 input: backbone outputs (B, 320, 12, 12) → pool to (B, 320, 4, 4)
     → flatten to (B, 5120) → head → (B, 9).
 
     Returns 2-tuple (corners (B,8), presence (B,)) for compatibility.

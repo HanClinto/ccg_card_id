@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Pre-cache packopening training frames as resized 448×448 JPEGs on local fast storage.
+"""Pre-cache packopening training frames as resized 384×384 JPEGs on local fast storage.
 
-Reading 340k individual JPEG frames from an external drive per training epoch is the
-main bottleneck for TinyCornerCNN training.  This script copies every frame that will
-be used for training (positive + sampled negatives) to cfg.fast_data_dir at 448×448,
-which fits in ~12–15 GB on local SSD and loads ~10–20× faster per epoch.
+Reading 340k+ individual JPEG frames from an external drive per training epoch is the
+main bottleneck for corner-detector training.  This script copies every frame that will
+be used for training to cfg.fast_data_dir at 384×384, which fits in ~9–12 GB on local
+SSD and loads ~10–20× faster per epoch.
 
 The cache uses a size-suffixed path to distinguish it from the source frames:
-    fast_data_dir / datasets / packopening / frames_448 / {slug} / {frame}.jpg
+    fast_data_dir / datasets / packopening / frames_384 / {slug} / {frame}.jpg
 
 The dataset loader checks for a cached copy first and falls back to the original.
 
 Usage (run from project root):
     python 03_detector/detectors/tiny_corner_cnn/precache_dataset.py
     python 03_detector/detectors/tiny_corner_cnn/precache_dataset.py --workers 8
-    python 03_detector/detectors/tiny_corner_cnn/precache_dataset.py --max-phash-dist 20
+    python 03_detector/detectors/tiny_corner_cnn/precache_dataset.py --max-phash-dist 10
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ sys.path.insert(0, str(_DETECTOR_DIR))
 from ccg_card_id.config import cfg
 from dataset import load_from_packopening_db
 
-INPUT_SIZE = 448
+INPUT_SIZE = 384
 JPEG_QUALITY = 90
 
 
@@ -56,7 +56,7 @@ def cache_one(src: Path, dst: Path) -> bool:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Pre-cache packopening frames at 448×448")
+    p = argparse.ArgumentParser(description="Pre-cache packopening frames at 384×384")
     p.add_argument("--data-dir",       type=Path, default=cfg.data_dir)
     p.add_argument("--fast-data-dir",  type=Path, default=cfg.fast_data_dir)
     p.add_argument("--packopening-db", type=Path,
@@ -88,7 +88,7 @@ def main() -> None:
     for row in all_rows:
         src     = data_dir / row["img_path"]
         dst_rel = row["img_path"].replace(
-            "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+            "datasets/packopening/frames/", "datasets/packopening/frames_384/", 1
         )
         dst = fast_data_dir / dst_rel
         if not dst.exists():
@@ -119,7 +119,7 @@ def main() -> None:
         )).stat().st_size
         for row in all_rows[:1000]
         if (fast_data_dir / row["img_path"].replace(
-            "datasets/packopening/frames/", "datasets/packopening/frames_448/", 1
+            "datasets/packopening/frames/", "datasets/packopening/frames_384/", 1
         )).exists()
     )
     avg_kb = total_bytes / min(1000, len(all_rows)) / 1024
