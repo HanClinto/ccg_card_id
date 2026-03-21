@@ -98,7 +98,7 @@ def load_from_packopening_db(
 
     # --- positives ---
     rows_db = con.execute(
-        "SELECT frame_path, corner0_x, corner0_y, corner1_x, corner1_y, "
+        "SELECT frame_path, card_id, corner0_x, corner0_y, corner1_x, corner1_y, "
         "       corner2_x, corner2_y, corner3_x, corner3_y "
         "FROM frames "
         "WHERE corner0_x IS NOT NULL AND corner1_x IS NOT NULL "
@@ -107,7 +107,9 @@ def load_from_packopening_db(
         (max_phash_dist,),
     ).fetchall()
 
-    positives = []
+    # Group positive frames by video slug (extracted from frame_path:
+    # "datasets/packopening/frames/{slug}/frame_XXXXX.jpg")
+    video_to_frames: dict[str, list[dict]] = {}
     for r in rows_db:
         corners = np.array(
             [[r["corner0_x"], r["corner0_y"]],
@@ -116,13 +118,28 @@ def load_from_packopening_db(
              [r["corner3_x"], r["corner3_y"]]],
             dtype=np.float32,
         )
-        positives.append({
-            "img_path":     r["frame_path"],   # already relative to data_dir
+        # frame_path: "datasets/packopening/frames/{slug}/filename.jpg"
+        slug = r["frame_path"].split("/")[3]
+        video_to_frames.setdefault(slug, []).append({
+            "img_path":     r["frame_path"],
+            "card_id":      r["card_id"] or "",
             "card_present": True,
             "corners":      corners,
         })
 
+    # Split by video slug so no video's frames appear in both train and val
+    slugs = sorted(video_to_frames.keys())
+    rng.shuffle(slugs)
+    n_val_videos = max(1, int(len(slugs) * val_frac))
+    val_slugs  = set(slugs[:n_val_videos])
+    train_slugs = set(slugs[n_val_videos:])
+
+    train_positives = [f for s in train_slugs for f in video_to_frames[s]]
+    val_positives   = [f for s in val_slugs   for f in video_to_frames[s]]
+
     # --- negatives: sample random frames from unmatched videos ---
+    # These videos have no SIFT matches so are inherently disjoint from positives.
+    # All negatives go to train; val quality is measured on positives only.
     unmatched_videos = con.execute(
         "SELECT slug FROM videos WHERE status = 'frames_extracted'"
     ).fetchall()
@@ -145,14 +162,18 @@ def load_from_packopening_db(
         for p in neg_candidates[:neg_sample_n]
     ]
 
-    all_rows = positives + negatives
-    rng.shuffle(all_rows)
-    n_val = max(1, int(len(all_rows) * val_frac))
+    train_rows = train_positives + negatives
+    val_rows   = val_positives
+    rng.shuffle(train_rows)
+    rng.shuffle(val_rows)
+
     print(
-        f"packopening: {len(positives):,} positives + {len(negatives):,} negatives "
-        f"→ {len(all_rows) - n_val:,} train / {n_val:,} val"
+        f"packopening: {len(train_positives)+len(val_positives):,} positives "
+        f"({len(train_slugs)} train videos / {len(val_slugs)} val videos) "
+        f"+ {len(negatives):,} negatives "
+        f"→ {len(train_rows):,} train / {len(val_rows):,} val"
     )
-    return all_rows[n_val:], all_rows[:n_val]
+    return train_rows, val_rows
 
 
 def load_from_clint_csv(
@@ -338,6 +359,7 @@ class CornerDataset(Dataset):
             "corners":      (torch.tensor(corners.flatten(), dtype=torch.float32)
                              if corners is not None
                              else torch.zeros(8, dtype=torch.float32)),
+            "card_id":      row.get("card_id") or "",
         }
 
     def _apply_augmentation(

@@ -140,6 +140,101 @@ def _val_presence_acc(pred_logit: torch.Tensor, true_presence: torch.Tensor) -> 
 
 
 # ---------------------------------------------------------------------------
+# pHash-based dewarp accuracy
+# ---------------------------------------------------------------------------
+
+_IMAGENET_MEAN_T = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+_IMAGENET_STD_T  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+
+def build_ref_phash_dict(card_ids: set[str], data_dir: Path) -> dict:
+    """Precompute pHash for each unique card_id from Scryfall reference images.
+
+    Returns {card_id: imagehash.ImageHash} for every card whose reference image
+    exists on disk.  Cards not found are silently omitted.
+    """
+    try:
+        import imagehash
+        from PIL import Image as _PILImage
+    except ImportError:
+        return {}
+
+    images_dir = data_dir / "catalog" / "scryfall" / "images" / "png" / "front"
+    result = {}
+    for card_id in card_ids:
+        if not card_id:
+            continue
+        img_path = images_dir / card_id[0] / card_id[1] / f"{card_id}.png"
+        if img_path.exists():
+            try:
+                result[card_id] = imagehash.phash(_PILImage.open(img_path).convert("RGB"))
+            except Exception:
+                pass
+    return result
+
+
+def batch_phash_hits(
+    pred_corners: torch.Tensor,   # (B, 8) normalized [0, 1]
+    images: torch.Tensor,         # (B, 3, H, W) ImageNet-normalized, on any device
+    card_ids: list[str],          # length B
+    presence_mask: torch.Tensor,  # (B,) bool — skip negatives
+    ref_phash_dict: dict,
+    threshold: int = 10,
+) -> tuple[int, int]:
+    """Dewarp each frame using predicted corners, compute pHash, compare to reference.
+
+    Returns (n_hits, n_evaluated).  Only frames where card_id is in
+    ref_phash_dict and presence_mask is True are evaluated.
+
+    The input images are denormalized from ImageNet stats and the dewarp is
+    applied in the original 448×448 pixel space, outputting a 224×224 crop
+    that is then hashed.  224×224 is more than enough for pHash precision.
+    """
+    try:
+        import cv2
+        import imagehash
+        import numpy as np
+        from PIL import Image as _PILImage
+    except ImportError:
+        return 0, 0
+
+    if not ref_phash_dict:
+        return 0, 0
+
+    B, _, H, W = images.shape
+    # Denormalize to RGB uint8
+    imgs_cpu = images.cpu()
+    imgs_np = (imgs_cpu * _IMAGENET_STD_T + _IMAGENET_MEAN_T).clamp(0, 1)
+    imgs_np = (imgs_np.permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)  # (B,H,W,3) RGB
+
+    corners_np = pred_corners.detach().cpu().numpy().reshape(B, 4, 2)  # normalized
+    corners_px = corners_np * np.array([W, H], dtype=np.float32)       # pixel coords
+
+    dst_pts = np.float32([[0, 0], [224, 0], [224, 224], [0, 224]])
+
+    n_ok = n_total = 0
+    pres = presence_mask.cpu().numpy()
+    for i, card_id in enumerate(card_ids):
+        if not pres[i]:
+            continue
+        ref_ph = ref_phash_dict.get(card_id)
+        if ref_ph is None:
+            continue
+        n_total += 1
+        src_pts = corners_px[i].astype(np.float32)
+        M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        dewarped = cv2.warpPerspective(imgs_np[i], M, (224, 224))
+        try:
+            pred_ph = imagehash.phash(_PILImage.fromarray(dewarped))
+            if (pred_ph - ref_ph) <= threshold:
+                n_ok += 1
+        except Exception:
+            pass
+
+    return n_ok, n_total
+
+
+# ---------------------------------------------------------------------------
 # Device selection
 # ---------------------------------------------------------------------------
 
@@ -210,8 +305,9 @@ _HISTORY_COLS = [
     "arch", "lambda_corners", "lambda_heatmap", "batch_size", "lr_start",
     "train_source", "max_phash_dist",
     "train_loss", "val_loss", "val_cpe", "val_pres_acc",
-    "test_cpe", "test_pres_acc", "lr_end",
-    "checkpoint_saved",
+    "val_phash_acc",
+    "test_cpe", "test_pres_acc", "test_phash_acc",
+    "lr_end", "checkpoint_saved",
 ]
 
 
@@ -224,8 +320,10 @@ def _append_history_row(
     val_loss: float,
     val_cpe: float,
     val_pres_acc: float,
+    val_phash_acc: float | None,
     test_cpe: float | None,
     test_pres_acc: float | None,
+    test_phash_acc: float | None,
     lr_end: float,
     checkpoint_saved: bool,
 ) -> None:
@@ -251,8 +349,10 @@ def _append_history_row(
             "val_loss":         f"{val_loss:.6f}",
             "val_cpe":          f"{val_cpe:.6f}",
             "val_pres_acc":     f"{val_pres_acc:.6f}",
+            "val_phash_acc":    f"{val_phash_acc:.4f}" if val_phash_acc is not None else "",
             "test_cpe":         f"{test_cpe:.6f}" if test_cpe is not None else "",
             "test_pres_acc":    f"{test_pres_acc:.6f}" if test_pres_acc is not None else "",
+            "test_phash_acc":   f"{test_phash_acc:.4f}" if test_phash_acc is not None else "",
             "lr_end":           f"{lr_end:.6e}",
             "checkpoint_saved": int(checkpoint_saved),
         })
@@ -289,7 +389,7 @@ def run(args: argparse.Namespace) -> None:
             raise FileNotFoundError(f"packopening DB not found: {db_path}")
         train_rows, val_rows = load_from_packopening_db(
             db_path, data_dir,
-            neg_sample_n=args.neg_sample_n,
+            neg_sample_n=0 if args.positives_only else args.neg_sample_n,
             val_frac=0.05,
             max_phash_dist=args.max_phash_dist,
         )
@@ -306,6 +406,13 @@ def run(args: argparse.Namespace) -> None:
     train_ds = CornerDataset(train_rows, data_dir, augment=True,  fast_data_dir=fast_data_dir)
     val_ds   = CornerDataset(val_rows,   data_dir, augment=False, fast_data_dir=fast_data_dir)
     test_ds  = CornerDataset(test_rows,  data_dir, augment=False) if test_rows else None
+
+    # Precompute reference pHashes for all unique card_ids in val + test sets.
+    # Used each epoch to measure dewarp quality independently of SIFT label noise.
+    _all_eval_card_ids = {r.get("card_id", "") for r in val_rows + test_rows if r.get("card_id")}
+    print(f"building ref pHash dict: {len(_all_eval_card_ids)} unique cards...", end=" ", flush=True)
+    ref_phash_dict = build_ref_phash_dict(_all_eval_card_ids, data_dir)
+    print(f"{len(ref_phash_dict)} found")
 
     _dl_kwargs = dict(
         num_workers=args.num_workers,
@@ -438,11 +545,13 @@ def run(args: argparse.Namespace) -> None:
         all_pred_presence: list[torch.Tensor] = []
         all_true_presence: list[torch.Tensor] = []
 
+        val_ph_ok = val_ph_total = 0
         with torch.no_grad():
             for batch in val_dl:
                 images   = batch["image"].to(device)
                 presence = batch["card_present"].to(device)
                 corners  = batch["corners"].to(device)
+                card_ids = batch.get("card_id", [])
 
                 out = model(images)
                 pred_corners, pred_presence = out[0], out[1]
@@ -459,6 +568,13 @@ def run(args: argparse.Namespace) -> None:
                 all_pred_presence.append(pred_presence.cpu())
                 all_true_presence.append(presence.cpu())
 
+                if ref_phash_dict and card_ids:
+                    n_ok, n_tot = batch_phash_hits(
+                        pred_corners, images, card_ids, presence.bool(),
+                        ref_phash_dict,
+                    )
+                    val_ph_ok += n_ok; val_ph_total += n_tot
+
         val_loss = val_loss_sum / max(1, n_val)
 
         pc_all = torch.cat(all_pred_corners)
@@ -466,37 +582,52 @@ def run(args: argparse.Namespace) -> None:
         pp_all = torch.cat(all_pred_presence)
         tp_all = torch.cat(all_true_presence)
 
-        cpe      = _val_cpe(pc_all, tc_all, tp_all.bool())
-        pres_acc = _val_presence_acc(pp_all, tp_all)
-        cur_lr   = optim.param_groups[0]["lr"]
+        cpe           = _val_cpe(pc_all, tc_all, tp_all.bool())
+        pres_acc      = _val_presence_acc(pp_all, tp_all)
+        val_phash_acc = val_ph_ok / val_ph_total if val_ph_total > 0 else None
+        cur_lr        = optim.param_groups[0]["lr"]
 
         # Optionally evaluate on clint test set (domain generalization)
-        test_cpe = test_pres_acc = None
+        test_cpe = test_pres_acc = test_phash_acc = None
         if test_dl is not None:
             model.eval()
             t_pc, t_tc, t_pp, t_tp = [], [], [], []
+            t_ph_ok = t_ph_total = 0
             with torch.no_grad():
                 for batch in test_dl:
                     images   = batch["image"].to(device)
                     presence = batch["card_present"].to(device)
                     corners  = batch["corners"].to(device)
+                    card_ids = batch.get("card_id", [])
                     t_out = model(images)
                     pc, pp = t_out[0], t_out[1]
                     t_pc.append(pc.cpu()); t_tc.append(corners.cpu())
                     t_pp.append(pp.cpu()); t_tp.append(presence.cpu())
+                    if ref_phash_dict and card_ids:
+                        n_ok, n_tot = batch_phash_hits(
+                            pc, images, card_ids, presence.bool(),
+                            ref_phash_dict,
+                        )
+                        t_ph_ok += n_ok; t_ph_total += n_tot
             t_pc_all = torch.cat(t_pc); t_tc_all = torch.cat(t_tc)
             t_pp_all = torch.cat(t_pp); t_tp_all = torch.cat(t_tp)
-            test_cpe      = _val_cpe(t_pc_all, t_tc_all, t_tp_all.bool())
-            test_pres_acc = _val_presence_acc(t_pp_all, t_tp_all)
+            test_cpe       = _val_cpe(t_pc_all, t_tc_all, t_tp_all.bool())
+            test_pres_acc  = _val_presence_acc(t_pp_all, t_tp_all)
+            test_phash_acc = t_ph_ok / t_ph_total if t_ph_total > 0 else None
 
-        test_str = (f"  test_cpe={test_cpe:.4f}  test_pres_acc={test_pres_acc:.3f}"
-                    if test_cpe is not None else "")
+        val_ph_str  = f"  val_phash_acc={val_phash_acc:.3f}" if val_phash_acc is not None else ""
+        test_str    = ""
+        if test_cpe is not None:
+            test_str = f"  test_cpe={test_cpe:.4f}  test_pres_acc={test_pres_acc:.3f}"
+            if test_phash_acc is not None:
+                test_str += f"  test_phash_acc={test_phash_acc:.3f}"
         print(
             f"epoch={epoch:3d}  "
             f"train_loss={train_loss:.4f}  "
             f"val_loss={val_loss:.4f}  "
             f"val_cpe={cpe:.4f}  "
             f"val_pres_acc={pres_acc:.3f}"
+            f"{val_ph_str}"
             f"{test_str}  "
             f"lr={cur_lr:.2e}"
         )
@@ -515,8 +646,8 @@ def run(args: argparse.Namespace) -> None:
 
         _append_history_row(
             history_csv, run_name, epoch, args,
-            train_loss, val_loss, cpe, pres_acc,
-            test_cpe, test_pres_acc,
+            train_loss, val_loss, cpe, pres_acc, val_phash_acc,
+            test_cpe, test_pres_acc, test_phash_acc,
             lr_end=cur_lr,
             checkpoint_saved=saved_epoch_ckpt,
         )
@@ -555,6 +686,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--neg-sample-n", type=int, default=10_000,
         help="Number of negative frames to sample from unmatched packopening videos (default: 10000)",
+    )
+    p.add_argument(
+        "--positives-only", action="store_true", default=True,
+        help="Train on positive (card-visible) frames only; sets neg-sample-n=0 (default: True)",
+    )
+    p.add_argument(
+        "--no-positives-only", dest="positives_only", action="store_false",
+        help="Include negative frames in training (overrides --positives-only default)",
     )
     p.add_argument(
         "--max-phash-dist", type=int, default=20,
