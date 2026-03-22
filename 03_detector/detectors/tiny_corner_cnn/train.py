@@ -146,13 +146,16 @@ def _quad_iou(pred: "np.ndarray", true: "np.ndarray") -> float:
     """
     import cv2
     import numpy as np
-    p = pred.astype(np.float32)
+    # Take convex hull of predicted corners so IoU is order-invariant.
+    # Without this, a bowtie/cross ordering (common in early training) gives
+    # near-zero contourArea even when corners are spatially correct.
+    p_hull = cv2.convexHull(pred.astype(np.float32)).reshape(-1, 2)
     t = true.astype(np.float32)
-    retval, inter_pts = cv2.intersectConvexConvex(p, t)
+    retval, inter_pts = cv2.intersectConvexConvex(p_hull, t)
     if retval == 0 or inter_pts is None or len(inter_pts) == 0:
         return 0.0
     inter = float(cv2.contourArea(inter_pts))
-    area_p = float(cv2.contourArea(p))
+    area_p = float(cv2.contourArea(p_hull))
     area_t = float(cv2.contourArea(t))
     union = area_p + area_t - inter
     return inter / union if union > 0 else 0.0
