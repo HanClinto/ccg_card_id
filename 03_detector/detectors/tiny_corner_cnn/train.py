@@ -685,6 +685,7 @@ def run(args: argparse.Namespace) -> None:
         all_true_presence: list[torch.Tensor] = []
 
         val_ph_sum = val_ph_total = 0
+        _PHASH_CAP = 2000  # max frames to evaluate for pHash per epoch
         with torch.no_grad():
             for batch in val_dl:
                 images   = batch["image"].to(device)
@@ -707,7 +708,7 @@ def run(args: argparse.Namespace) -> None:
                 all_pred_presence.append(pred_presence.cpu())
                 all_true_presence.append(presence.cpu())
 
-                if ref_phash_dict and card_ids:
+                if ref_phash_dict and card_ids and val_ph_total < _PHASH_CAP:
                     s, n = batch_phash_dists(
                         pred_corners, images, card_ids, presence.bool(),
                         ref_phash_dict,
@@ -743,7 +744,7 @@ def run(args: argparse.Namespace) -> None:
                     pc, pp = t_out[0], t_out[1]
                     t_pc.append(pc.cpu()); t_tc.append(corners.cpu())
                     t_pp.append(pp.cpu()); t_tp.append(presence.cpu())
-                    if ref_phash_dict and card_ids:
+                    if ref_phash_dict and card_ids and t_ph_total < _PHASH_CAP:
                         s, n = batch_phash_dists(
                             pc, images, card_ids, presence.bool(),
                             ref_phash_dict,
