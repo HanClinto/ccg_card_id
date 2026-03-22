@@ -162,12 +162,20 @@ def _quad_iou(pred: "np.ndarray", true: "np.ndarray") -> float:
 
 
 def _val_iou(pred_corners: torch.Tensor, true_corners: torch.Tensor, mask: torch.Tensor) -> float:
-    """Mean quadrilateral IoU on positive examples (normalized coords, so scale-invariant)."""
+    """Mean quadrilateral IoU on positive examples (normalized coords, so scale-invariant).
+
+    Samples up to 2000 examples to keep eval fast (the full val set of ~11k
+    frames makes the per-frame cv2 loop prohibitively slow per epoch).
+    """
     if not mask.any():
         return 0.0
     import numpy as np
     pc = pred_corners[mask].detach().cpu().numpy().reshape(-1, 4, 2)
     tc = true_corners[mask].detach().cpu().numpy().reshape(-1, 4, 2)
+    # Subsample to cap eval time
+    if len(pc) > 2000:
+        idx = np.random.choice(len(pc), 2000, replace=False)
+        pc, tc = pc[idx], tc[idx]
     ious = [_quad_iou(p, t) for p, t in zip(pc, tc)]
     return float(np.mean(ious))
 
