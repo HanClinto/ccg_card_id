@@ -141,7 +141,7 @@ def main() -> None:
 
     all_eval_ids = {r.get("card_id", "") for r in val_rows + test_rows if r.get("card_id")}
     print(f"Building ref pHash dict: {len(all_eval_ids)} unique cards...", end=" ", flush=True)
-    ref_phash_dict = build_ref_phash_dict(all_eval_ids, data_dir)
+    ref_phash_dict = build_ref_phash_dict(all_eval_ids, data_dir, cache_dir=args.fast_data_dir)
     print(f"{len(ref_phash_dict)} found")
 
     device = pick_device(args.cpu)

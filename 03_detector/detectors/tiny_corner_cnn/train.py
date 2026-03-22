@@ -196,29 +196,61 @@ def _ref_image_path(card_id: str, data_dir: Path) -> Path:
                 / card_id[0] / card_id[1] / f"{card_id}.png")
 
 
-def build_ref_phash_dict(card_ids: set[str], data_dir: Path) -> dict:
+def build_ref_phash_dict(card_ids: set[str], data_dir: Path, cache_dir: Path | None = None) -> dict:
     """Precompute pHash for each unique card_id from reference images.
 
     Supports both Scryfall (UUID format) and Pokemon TCG card IDs.
     Returns {card_id: imagehash.ImageHash} for every card whose reference image
     exists on disk.  Cards not found are silently omitted.
+
+    Results are cached to {cache_dir}/ref_phash_cache.pkl so subsequent runs
+    skip the slow PNG reads.  New card_ids not in the cache are computed and
+    merged in incrementally.
     """
+    import pickle
+
     try:
         import imagehash
         from PIL import Image as _PILImage
     except ImportError:
         return {}
 
+    # Load existing cache
+    cache_path = (cache_dir or data_dir) / "ref_phash_cache.pkl"
+    cached: dict = {}
+    if cache_path.exists():
+        try:
+            with cache_path.open("rb") as f:
+                cached = pickle.load(f)
+        except Exception:
+            cached = {}
+
     result = {}
+    new_entries = 0
     for card_id in card_ids:
         if not card_id:
+            continue
+        if card_id in cached:
+            result[card_id] = cached[card_id]
             continue
         img_path = _ref_image_path(card_id, data_dir)
         if img_path.exists():
             try:
                 result[card_id] = imagehash.phash(_PILImage.open(img_path).convert("RGB"))
+                cached[card_id] = result[card_id]
+                new_entries += 1
             except Exception:
                 pass
+
+    # Persist any newly computed entries
+    if new_entries > 0:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with cache_path.open("wb") as f:
+                pickle.dump(cached, f)
+        except Exception:
+            pass
+
     return result
 
 
@@ -510,7 +542,7 @@ def run(args: argparse.Namespace) -> None:
     # Used each epoch to measure dewarp quality independently of SIFT label noise.
     _all_eval_card_ids = {r.get("card_id", "") for r in val_rows + test_rows if r.get("card_id")}
     print(f"building ref pHash dict: {len(_all_eval_card_ids)} unique cards...", end=" ", flush=True)
-    ref_phash_dict = build_ref_phash_dict(_all_eval_card_ids, data_dir)
+    ref_phash_dict = build_ref_phash_dict(_all_eval_card_ids, data_dir, cache_dir=args.fast_data_dir)
     print(f"{len(ref_phash_dict)} found")
 
     _dl_kwargs = dict(
