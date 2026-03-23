@@ -542,7 +542,11 @@ def run(args: argparse.Namespace) -> None:
         train_rows, val_rows = load_from_clint_csv(clint_csv, clint_neg, data_dir)
         test_rows = []
 
-    train_ds = CornerDataset(train_rows, data_dir, augment=True,  fast_data_dir=fast_data_dir)
+    if args.max_train_samples and len(train_rows) > args.max_train_samples:
+        train_rows = train_rows[:args.max_train_samples]
+        print(f"memorization test: capped train set to {len(train_rows)} samples")
+
+    train_ds = CornerDataset(train_rows, data_dir, augment=not args.no_augment, fast_data_dir=fast_data_dir)
     val_ds   = CornerDataset(val_rows,   data_dir, augment=False, fast_data_dir=fast_data_dir)
     test_ds  = CornerDataset(test_rows,  data_dir, augment=False) if test_rows else None
 
@@ -837,6 +841,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-positives-only", dest="positives_only", action="store_false",
         help="Include negative frames in training (overrides --positives-only default)",
+    )
+    p.add_argument(
+        "--max-train-samples", type=int, default=None,
+        help="Cap training set to N samples (for memorization test). Default: no cap.",
+    )
+    p.add_argument(
+        "--no-augment", action="store_true", default=False,
+        help="Disable training augmentation (for memorization test).",
     )
     p.add_argument(
         "--max-phash-dist", type=int, default=20,
