@@ -374,11 +374,18 @@ class CornerDataset(Dataset):
             if corners is not None:
                 corners = _rotate_corners(corners, 90.0 * k, cx=0.5, cy=0.5)
 
+        # Random perspective jitter (50% probability).
+        # Each corner of the image is shifted by up to ±jitter_frac of the image
+        # size, then we compute the homography and warp both the image and the
+        # corner annotations accordingly.
+        if random.random() < 0.5:
+            img, corners = _perspective_jitter(img, corners, max_shift=0.15)
+
         # Restore canonical corner order (TL→TR→BR→BL) after augmentation.
         # This ensures the direct per-channel loss in training always sees
         # consistently ordered corners regardless of flip/rotation applied.
         if corners is not None:
-            w, h = img.size  # PIL (width, height) — 448×448 after resize
+            w, h = img.size
             corners = sort_corners_canonical(corners, img_w=w, img_h=h)
 
         return img, corners
@@ -391,3 +398,54 @@ def _rotate_corners(corners: np.ndarray, angle_deg: float, cx: float, cy: float)
     shifted = corners - np.array([cx, cy])
     rotated = shifted @ np.array([[cos_a, -sin_a], [sin_a, cos_a]]).T
     return np.clip(rotated + np.array([cx, cy]), 0.0, 1.0).astype(np.float32)
+
+
+def _perspective_jitter(
+    img: "Image.Image",
+    corners: "np.ndarray | None",
+    max_shift: float = 0.15,
+) -> "tuple[Image.Image, np.ndarray | None]":
+    """Apply a random projective (perspective) warp to image and corner annotations.
+
+    Each corner of the *image frame* is displaced by a random amount (up to
+    max_shift × image_size in each axis).  The resulting homography is applied
+    to the image with bilinear interpolation, and the same homography is used to
+    transform the annotated card corners.  The output image is the same size as
+    the input.
+
+    This teaches the model to find corners under different viewpoints, addressing
+    the train/val gap caused by each video having a distinct visual appearance.
+    """
+    import cv2
+    from PIL import Image as _PIL_Image
+
+    w, h = img.size
+    dx = max_shift * w
+    dy = max_shift * h
+
+    # Source corners: TL, TR, BR, BL of the image frame (pixel coords)
+    src = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+    # Destination: each image-frame corner shifted randomly within ±dx, ±dy
+    shifts = np.random.uniform(-1, 1, src.shape).astype(np.float32) * np.array([dx, dy], dtype=np.float32)
+    dst = np.clip(src + shifts, 0, [w, h]).astype(np.float32)
+
+    H, _ = cv2.findHomography(src, dst)
+    if H is None:
+        return img, corners  # degenerate — skip
+
+    img_np = np.array(img)
+    warped = cv2.warpPerspective(img_np, H, (w, h), flags=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_REFLECT_101)
+    img_out = _PIL_Image.fromarray(warped)
+
+    if corners is not None:
+        # Transform normalised corners through H
+        pts = corners * np.array([w, h], dtype=np.float32)           # (4, 2) pixel
+        pts_h = np.concatenate([pts, np.ones((4, 1), dtype=np.float32)], axis=1)  # (4, 3)
+        pts_t = (H @ pts_h.T).T                                       # (4, 3)
+        pts_t = pts_t[:, :2] / pts_t[:, 2:3]                          # dehomogenise
+        corners_out = np.clip(pts_t / np.array([w, h], dtype=np.float32), 0.0, 1.0).astype(np.float32)
+    else:
+        corners_out = None
+
+    return img_out, corners_out

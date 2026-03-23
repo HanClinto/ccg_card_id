@@ -410,7 +410,8 @@ def _make_run_name(args: argparse.Namespace) -> str:
     elif args.arch == "tiny-direct":
         backbone, head = "tcnn", "directreg"
     else:
-        backbone, head = "mvit", "spatialreg4"
+        pool = getattr(args, "pool_size", 4)
+        backbone, head = "mvit", f"spatialreg{pool}"
 
     lc = int(args.lambda_corners) if args.lambda_corners == int(args.lambda_corners) else args.lambda_corners
     loss_cfg = f"lc{lc}"
@@ -590,7 +591,7 @@ def run(args: argparse.Namespace) -> None:
         if args.seed_checkpoint is not None:
             print("WARNING: --seed-checkpoint ignored for tiny-direct arch (no compatible backbone)")
     else:
-        model = MobileViTCornerDetector(pretrained_backbone=True).to(device)
+        model = MobileViTCornerDetector(pretrained_backbone=True, pool_size=args.pool_size).to(device)
         params = sum(p.numel() for p in model.parameters())
         print(f"  {params:,} parameters ({params*4/1024**2:.1f} MB fp32)")
         if args.seed_checkpoint is not None:
@@ -792,6 +793,7 @@ def run(args: argparse.Namespace) -> None:
         ckpt = {
             "epoch": epoch,
             "arch": args.arch,
+            "pool_size": getattr(args, "pool_size", 4),
             "model": model.state_dict(),
             "optimizer": optim.state_dict(),
             "val_loss": val_loss,
@@ -927,6 +929,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of epochs to keep the backbone fully frozen while the head warms up "
              "(mobilevit only). After this many epochs, backbone unfreezes and trains at "
              "backbone_lr_scale * lr. Default 0 (no freeze phase). Recommended: 2.",
+    )
+    p.add_argument(
+        "--pool-size", type=int, default=4,
+        help="Spatial pool output size for MobileViTCornerDetector (mobilevit only). "
+             "Must divide (input_size/32) evenly for MPS. At 384×384: valid values are "
+             "1,2,3,4,6,12. Default 4 (5120-d). Try 6 for 11520-d (finer spatial resolution).",
     )
     p.add_argument("--cpu", action="store_true", help="Force CPU even if GPU is available")
     return p

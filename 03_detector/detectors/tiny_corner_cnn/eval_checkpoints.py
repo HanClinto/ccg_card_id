@@ -60,7 +60,8 @@ def eval_checkpoint(
     elif arch == "tiny-direct":
         model = TinyCornerCNNDirect()
     else:
-        model = MobileViTCornerDetector(pretrained_backbone=False)
+        pool_size = ckpt.get("pool_size", 4)
+        model = MobileViTCornerDetector(pretrained_backbone=False, pool_size=pool_size)
 
     model.load_state_dict(ckpt["model"])
     model.to(device)

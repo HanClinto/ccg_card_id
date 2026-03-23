@@ -279,7 +279,12 @@ class MobileViTCornerDetector(nn.Module):
     Requires: pip install timm
     """
 
-    def __init__(self, pretrained_backbone: bool = True, dropout: float = 0.3) -> None:
+    def __init__(
+        self,
+        pretrained_backbone: bool = True,
+        dropout: float = 0.3,
+        pool_size: int = 4,
+    ) -> None:
         super().__init__()
         if not _TIMM_AVAILABLE:
             raise ImportError("timm is required: pip install timm")
@@ -287,14 +292,15 @@ class MobileViTCornerDetector(nn.Module):
             "mobilevit_xxs", pretrained=pretrained_backbone, num_classes=0
         )
         # forward_features() returns (B, 320, H/32, W/32).
-        # Pool to 4×4 — 14×14 (448/32) divides evenly, captures 16-region
-        # spatial structure for improved localization resolution.
-        # Note: MPS requires input size divisible by output size for adaptive pool.
-        spatial_feat_dim = 320 * 4 * 4  # 5120
+        # At 384×384 input the feature map is 12×12.
+        # Valid pool_size values (must divide 12 evenly for MPS): 1,2,3,4,6,12.
+        # Default 4×4 → 5120-d.  6×6 → 11520-d (finer spatial resolution).
+        self._pool_size    = pool_size
+        spatial_feat_dim   = 320 * pool_size * pool_size
 
-        self.spatial_pool = nn.AdaptiveAvgPool2d(4)
+        self.spatial_pool = nn.AdaptiveAvgPool2d(pool_size)
         self.head = nn.Sequential(
-            nn.Flatten(),                             # (B, 5120)
+            nn.Flatten(),
             nn.LayerNorm(spatial_feat_dim),
             nn.Linear(spatial_feat_dim, 256),
             nn.GELU(),
@@ -303,9 +309,9 @@ class MobileViTCornerDetector(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        feats = self.backbone.forward_features(x)  # (B, 320, H/32, W/32)
-        feats = self.spatial_pool(feats)            # (B, 320, 4, 4)
-        out   = self.head(feats)                    # (B, 9)
+        feats = self.backbone.forward_features(x)   # (B, 320, H/32, W/32)
+        feats = self.spatial_pool(feats)             # (B, 320, P, P)
+        out   = self.head(feats)                     # (B, 9)
         return out[:, :8], out[:, 8]
 
     def load_card_id_checkpoint(self, ckpt_path: Path | str) -> None:
