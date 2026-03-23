@@ -439,7 +439,7 @@ _HISTORY_COLS = [
     "run_name", "epoch", "timestamp",
     "arch", "lambda_corners", "lambda_heatmap", "batch_size", "lr_start",
     "train_source", "max_phash_dist",
-    "train_loss", "val_loss", "val_cpe", "val_iou", "val_pres_acc",
+    "train_loss", "train_cpe", "val_loss", "val_cpe", "val_iou", "val_pres_acc",
     "val_mean_phash_dist",
     "test_cpe", "test_iou", "test_pres_acc", "test_mean_phash_dist",
     "lr_end", "checkpoint_saved",
@@ -453,6 +453,7 @@ def _append_history_row(
     args: argparse.Namespace,
     train_loss: float,
     val_loss: float,
+    train_cpe: float,
     val_cpe: float,
     val_iou: float,
     val_pres_acc: float,
@@ -483,6 +484,7 @@ def _append_history_row(
             "train_source":          args.train_source,
             "max_phash_dist":        args.max_phash_dist if args.train_source == "packopening" else "",
             "train_loss":            f"{train_loss:.6f}",
+            "train_cpe":             f"{train_cpe:.6f}",
             "val_loss":              f"{val_loss:.6f}",
             "val_cpe":               f"{val_cpe:.6f}",
             "val_iou":               f"{val_iou:.6f}",
@@ -655,6 +657,9 @@ def run(args: argparse.Namespace) -> None:
         model.train()
         total_loss = 0.0
         n_train = 0
+        tr_pc: list[torch.Tensor] = []
+        tr_tc: list[torch.Tensor] = []
+        tr_tp: list[torch.Tensor] = []
         for batch in tqdm(train_dl, desc=f"epoch {epoch}/{end_epoch}", unit="batch"):
             images   = batch["image"].to(device)
             presence = batch["card_present"].to(device)
@@ -676,8 +681,13 @@ def run(args: argparse.Namespace) -> None:
 
             total_loss += loss.item() * images.shape[0]
             n_train    += images.shape[0]
+            tr_pc.append(pred_corners.detach().cpu())
+            tr_tc.append(corners.cpu())
+            tr_tp.append(presence.cpu())
 
         train_loss = total_loss / max(1, n_train)
+        tr_pc_all = torch.cat(tr_pc); tr_tc_all = torch.cat(tr_tc); tr_tp_all = torch.cat(tr_tp)
+        train_cpe = _val_cpe(tr_pc_all, tr_tc_all, tr_tp_all.bool())
 
         # ---- val ----
         model.eval()
@@ -769,7 +779,7 @@ def run(args: argparse.Namespace) -> None:
                 test_str += f"  test_phash_dist={test_mean_phash_dist:.1f}"
         print(
             f"epoch={epoch:3d}  "
-            f"train_loss={train_loss:.4f}  "
+            f"train_loss={train_loss:.4f}  train_cpe={train_cpe:.4f}  "
             f"val_loss={val_loss:.4f}  "
             f"val_cpe={cpe:.4f}  "
             f"val_iou={iou:.3f}  "
@@ -793,7 +803,7 @@ def run(args: argparse.Namespace) -> None:
 
         _append_history_row(
             history_csv, run_name, epoch, args,
-            train_loss, val_loss, cpe, iou, pres_acc, val_mean_phash_dist,
+            train_loss, val_loss, train_cpe, cpe, iou, pres_acc, val_mean_phash_dist,
             test_cpe, test_iou, test_pres_acc, test_mean_phash_dist,
             lr_end=cur_lr,
             checkpoint_saved=saved_epoch_ckpt,
