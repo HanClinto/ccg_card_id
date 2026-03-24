@@ -1,39 +1,38 @@
 #!/usr/bin/env python3
 """Neural corner detector models.
 
-Three architectures are provided:
-
 TinyCornerCNN  (soft-argmax heatmap head — CONCLUSIVELY STUCK)
 --------------------------------------------------------------
-  ~48K parameters, 0.2 MB fp32.  Heatmap head + soft-argmax.
-  RESULT: val_cpe permanently stuck at ~0.63 (image-center baseline) over
-  40+ epochs. Root cause: BCE loss and soft-argmax pull in opposite directions
-  (see v0.3 experiment notes in README). Do not use for new training runs.
-  Kept for reference and for the quick diagnostic below.
+  ~48K parameters.  RESULT: val_cpe stuck at ~0.63 (center baseline).
+  Root cause: BCE heatmap loss and soft-argmax pull in opposite directions.
+  Kept for reference only.
 
-TinyCornerCNNDirect  (direct regression — diagnostic run)
-----------------------------------------------------------
-  ~49K parameters, 0.2 MB fp32.  Same encoder as TinyCornerCNN, but replaces
-  the heatmap/soft-argmax head with AdaptiveAvgPool2d(2) → LayerNorm → MLP → 9.
-  Purpose: isolate whether soft-argmax was the *only* problem, or whether the
-  48K backbone also lacks capacity. If this breaks the center baseline, the
-  architecture was fine and soft-argmax was the sole culprit.
+TinyCornerCNNDirect  (direct regression — diagnostic)
+------------------------------------------------------
+  ~49K parameters.  Same encoder, direct regression head instead of soft-argmax.
+  Confirmed model can break the center baseline; used to rule out backbone
+  capacity as a limiting factor.
 
-MobileViTCornerDetector  (primary path forward)
-------------------------------------------------
-  951K parameters, 3.6 MB fp32.  MobileViT-XXS backbone (ImageNet pretrained)
-  + spatial-aware direct regression head (AdaptiveAvgPool2d(4) → MLP → 9).
-  Seed: ImageNet pretrained weights only — do NOT seed from ArcFace card-ID
-  checkpoints, which are trained on aligned card internals and focus on fine
-  artwork/typography details rather than card borders.
-  Pool is 4×4 (5120-d) to preserve more spatial information than the earlier
-  2×2 design (1280-d) which capped localization at ±25% of image per quadrant.
+MobileViTCornerDetector  (direct regression — current baseline)
+---------------------------------------------------------------
+  ~2.3M parameters.  MobileViT-XXS backbone (ImageNet pretrained) + spatial
+  pool (configurable, default 4×4) → LayerNorm → MLP → 9.
+  Plateaus at val_cpe ~0.48–0.57 after 20+ epochs. pHash never moves.
+  Still the best result so far; kept as the comparison baseline.
 
-All models return corners in canonical TL→TR→BR→BL order.
+SimCCCornerDetector  (1D coordinate classification — next experiment)
+---------------------------------------------------------------------
+  ~2.2M parameters.  Same MobileViT-XXS backbone + SimCC head.
+  Replaces the 8-float regression with 8 independent 1D softmax classifiers
+  (one per corner axis), each over NUM_BINS bins at 1px resolution.
+  Loss: KL divergence against Gaussian soft targets (σ ≈ 6 bins).
+  Motivation: avoids the ill-conditioned L1/L2 regression landscape; each
+  classifier has well-conditioned cross-entropy gradients from random init.
+  Recommended by ChatGPT ET, Claude Opus, and Grok as the next step if
+  direct regression plateaus.
 
-Loss (TinyCornerCNN / TinyCornerCNNDirect):
-  TinyCornerCNN:      L = BCE(presence) + λ_c * SmoothL1(corners) + λ_h * BCE(heatmaps)
-  TinyCornerCNNDirect: L = BCE(presence) + λ_c * SmoothL1(corners)  [no heatmap term]
+All models return (corners (B,8), presence (B,)) — corners in canonical
+TL→TR→BR→BL order, normalised [0,1].
 """
 from __future__ import annotations
 
@@ -329,3 +328,124 @@ class MobileViTCornerDetector(nn.Module):
             print(f"  Missing keys: {len(missing)}")
         if unexpected:
             print(f"  Unexpected keys: {len(unexpected)}")
+
+
+# ---------------------------------------------------------------------------
+# SimCCCornerDetector — 1D coordinate classification
+# ---------------------------------------------------------------------------
+
+class SimCCCornerDetector(nn.Module):
+    """MobileViT-XXS backbone + SimCC head for corner coordinate prediction.
+
+    SimCC (Simple Coordinate Classification) replaces corner regression with
+    two independent 1D softmax classifiers per corner — one for x, one for y —
+    each distributing probability mass over NUM_BINS equally-spaced bins that
+    span the normalised [0, 1] coordinate range.
+
+    Advantages over direct regression (MobileViTCornerDetector):
+      - Well-conditioned cross-entropy / KL gradients from random init
+      - No ill-conditioned L1/L2 regression landscape where all outputs start near 0.5
+      - Gaussian soft targets provide smooth label density over neighbouring bins
+      - Argmax at inference gives ~1px resolution (at 384 bins for 384×384 input)
+
+    Architecture:
+      backbone.forward_features()  →  (B, 320, 12, 12)   [at 384×384 input]
+      AdaptiveAvgPool2d(1)         →  (B, 320)
+      LayerNorm + Linear(320→256) + GELU + Dropout
+      ├─ 8 × Linear(256→NUM_BINS)  →  coord logits per corner-axis
+      └─ Linear(256→1)             →  presence logit
+
+    Loss (computed externally in train.py via simcc_coord_loss()):
+      KL divergence between log-softmax(logits) and Gaussian soft targets
+      centered at the GT bin, σ = SIGMA_BINS bins.  Only applied on
+      card-present frames.
+
+    Returns (corners (B,8), presence (B,), coord_logits list[8×(B,NUM_BINS)]).
+    coord_logits are needed for the KL loss during training; at inference only
+    corners and presence are used.
+    """
+
+    NUM_BINS: int = 384        # one bin per pixel at 384×384 input
+    SIGMA_BINS: float = 6.0    # Gaussian soft-target width in bins (~1.5% of image)
+
+    def __init__(
+        self,
+        pretrained_backbone: bool = True,
+        dropout: float = 0.3,
+        num_bins: int = NUM_BINS,
+    ) -> None:
+        super().__init__()
+        if not _TIMM_AVAILABLE:
+            raise ImportError("timm is required: pip install timm")
+        self.num_bins = num_bins
+        self.backbone = timm.create_model(
+            "mobilevit_xxs", pretrained=pretrained_backbone, num_classes=0
+        )
+        feat_dim = 320   # MobileViT-XXS final feature channels
+
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.proj = nn.Sequential(
+            nn.Flatten(),
+            nn.LayerNorm(feat_dim),
+            nn.Linear(feat_dim, 256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        # 8 classifiers: corners 0-3, each with x and y axis
+        # Order: x0, y0, x1, y1, x2, y2, x3, y3
+        self.coord_heads = nn.ModuleList([nn.Linear(256, num_bins) for _ in range(8)])
+        self.presence_head = nn.Linear(256, 1)
+
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        feats = self.backbone.forward_features(x)   # (B, 320, H/32, W/32)
+        proj  = self.proj(self.pool(feats))          # (B, 256)
+
+        coord_logits = [head(proj) for head in self.coord_heads]  # 8 × (B, num_bins)
+
+        # Soft-argmax over bins → normalised [0, 1] coordinate
+        bins   = torch.linspace(0.0, 1.0, self.num_bins, device=x.device)  # (num_bins,)
+        coords = [(torch.softmax(l, dim=-1) * bins).sum(dim=-1) for l in coord_logits]
+        corners  = torch.stack(coords, dim=-1)           # (B, 8)
+        presence = self.presence_head(proj).squeeze(-1)  # (B,)
+
+        return corners, presence, coord_logits
+
+
+def simcc_coord_loss(
+    coord_logits: list[torch.Tensor],
+    gt_corners: torch.Tensor,
+    mask: torch.Tensor,
+    sigma_bins: float = SimCCCornerDetector.SIGMA_BINS,
+) -> torch.Tensor:
+    """KL divergence loss for SimCC coordinate heads.
+
+    Args:
+        coord_logits : list of 8 tensors, each (B, num_bins) — raw logits.
+        gt_corners   : (B, 8) normalised [0, 1] GT corner coordinates,
+                       order x0,y0,x1,y1,x2,y2,x3,y3.
+        mask         : (B,) bool — True for card-present frames.
+        sigma_bins   : Gaussian soft-target std-dev in bins.
+
+    Returns scalar loss (mean over axes and present frames).
+    """
+    import torch.nn.functional as F
+
+    if mask.sum() == 0:
+        return torch.tensor(0.0, device=gt_corners.device, requires_grad=True)
+
+    num_bins = coord_logits[0].shape[-1]
+    bins     = torch.arange(num_bins, device=gt_corners.device).float()  # (num_bins,)
+
+    total = torch.tensor(0.0, device=gt_corners.device)
+    for i, logits in enumerate(coord_logits):
+        gt_bin = gt_corners[mask, i] * (num_bins - 1)      # (N,)
+        diff   = bins.unsqueeze(0) - gt_bin.unsqueeze(1)    # (N, num_bins)
+        target = torch.exp(-0.5 * (diff / sigma_bins) ** 2)
+        target = target / target.sum(dim=-1, keepdim=True)  # normalise → probability dist
+
+        log_pred = F.log_softmax(logits[mask], dim=-1)       # (N, num_bins)
+        total    = total + F.kl_div(log_pred, target, reduction="batchmean", log_target=False)
+
+    return total / len(coord_logits)

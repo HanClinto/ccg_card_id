@@ -49,7 +49,12 @@ from ccg_card_id.config import cfg
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from model import TinyCornerCNN, TinyCornerCNNDirect, MobileViTCornerDetector, make_gaussian_heatmaps   # noqa: E402
+from model import (  # noqa: E402
+    TinyCornerCNN, TinyCornerCNNDirect,
+    MobileViTCornerDetector,
+    SimCCCornerDetector, simcc_coord_loss,
+    make_gaussian_heatmaps,
+)
 from dataset import (  # noqa: E402
     CornerDataset,
     load_from_packopening_db,
@@ -409,6 +414,8 @@ def _make_run_name(args: argparse.Namespace) -> str:
         backbone, head = "tcnn", "softargmax"
     elif args.arch == "tiny-direct":
         backbone, head = "tcnn", "directreg"
+    elif args.arch == "simcc":
+        backbone, head = "mvit", "simcc"
     else:
         pool = getattr(args, "pool_size", 4)
         backbone, head = "mvit", f"spatialreg{pool}"
@@ -423,9 +430,9 @@ def _make_run_name(args: argparse.Namespace) -> str:
     input_tag   = f"img{INPUT_SIZE}"
     data_filter = f"ph{args.max_phash_dist}" if args.train_source == "packopening" else "clint"
 
-    # For mobilevit, encode seed source, backbone LR scale, and freeze epochs
+    # For mobilevit/simcc, encode seed source, backbone LR scale, and freeze epochs
     seed_tag = ""
-    if args.arch == "mobilevit":
+    if args.arch in ("mobilevit", "simcc"):
         seed_tag = "_seedcid" if args.seed_checkpoint is not None else "_seedin"
         if args.backbone_lr_scale != 1.0:
             scale_str = f"{args.backbone_lr_scale:.2f}".replace("0.", "").replace(".", "")
@@ -590,6 +597,15 @@ def run(args: argparse.Namespace) -> None:
         print(f"  {params:,} parameters ({params*4/1024:.0f} KB fp32)")
         if args.seed_checkpoint is not None:
             print("WARNING: --seed-checkpoint ignored for tiny-direct arch (no compatible backbone)")
+    elif args.arch == "simcc":
+        model = SimCCCornerDetector(pretrained_backbone=True).to(device)
+        params = sum(p.numel() for p in model.parameters())
+        print(f"  {params:,} parameters ({params*4/1024**2:.1f} MB fp32)")
+        if args.seed_checkpoint is not None:
+            print(f"seeding backbone from {args.seed_checkpoint}")
+            model.load_card_id_checkpoint(args.seed_checkpoint)
+        if args.freeze_backbone_epochs > 0:
+            print(f"backbone frozen for first {args.freeze_backbone_epochs} epoch(s)")
     else:
         model = MobileViTCornerDetector(pretrained_backbone=True, pool_size=args.pool_size).to(device)
         params = sum(p.numel() for p in model.parameters())
@@ -603,8 +619,13 @@ def run(args: argparse.Namespace) -> None:
     # Differential LR: for mobilevit, use a lower LR for the pretrained backbone
     # to avoid catastrophic forgetting while the head learns quickly.
     backbone_lr = args.lr * args.backbone_lr_scale
-    if args.arch == "mobilevit" and args.backbone_lr_scale != 1.0:
-        head_params     = list(model.spatial_pool.parameters()) + list(model.head.parameters())
+    if args.arch in ("mobilevit", "simcc") and args.backbone_lr_scale != 1.0:
+        if args.arch == "mobilevit":
+            head_params = list(model.spatial_pool.parameters()) + list(model.head.parameters())
+        else:  # simcc
+            head_params = (list(model.pool.parameters()) + list(model.proj.parameters())
+                           + list(model.coord_heads.parameters())
+                           + list(model.presence_head.parameters()))
         backbone_params = list(model.backbone.parameters())
         optim = torch.optim.AdamW([
             {"params": backbone_params, "lr": backbone_lr,  "name": "backbone"},
@@ -647,7 +668,7 @@ def run(args: argparse.Namespace) -> None:
         # Staged backbone freeze for mobilevit: keep backbone frozen for the
         # first N epochs so the randomly-initialised head can anchor onto
         # pretrained features before we start adapting the backbone.
-        if args.arch == "mobilevit" and args.freeze_backbone_epochs > 0:
+        if args.arch in ("mobilevit", "simcc") and args.freeze_backbone_epochs > 0:
             freeze = epoch <= args.freeze_backbone_epochs
             for p in model.backbone.parameters():
                 p.requires_grad_(not freeze)
@@ -668,11 +689,21 @@ def run(args: argparse.Namespace) -> None:
 
             out = model(images)
             pred_corners, pred_presence = out[0], out[1]
-            pred_heatmaps = out[2] if len(out) == 3 else None
-            loss = detection_loss(
-                pred_corners, pred_presence, pred_heatmaps, corners, presence,
-                args.lambda_corners, args.lambda_heatmap,
-            )
+
+            if args.arch == "simcc":
+                coord_logits = out[2]
+                mask = presence.bool()
+                pres_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                    pred_presence, presence,
+                )
+                coord_loss = simcc_coord_loss(coord_logits, corners, mask)
+                loss = pres_loss + args.lambda_corners * coord_loss
+            else:
+                pred_heatmaps = out[2] if len(out) == 3 else None
+                loss = detection_loss(
+                    pred_corners, pred_presence, pred_heatmaps, corners, presence,
+                    args.lambda_corners, args.lambda_heatmap,
+                )
 
             optim.zero_grad(set_to_none=True)
             loss.backward()
@@ -879,13 +910,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory of clint hard-negative frames",
     )
     p.add_argument(
-        "--arch", choices=["tiny", "tiny-direct", "mobilevit"], default="tiny",
+        "--arch", choices=["tiny", "tiny-direct", "mobilevit", "simcc"], default="tiny",
         help="Model architecture. "
-             "'tiny': TinyCornerCNN with soft-argmax heatmap head (CONCLUSIVELY STUCK — do not use). "
-             "'tiny-direct': TinyCornerCNNDirect — same encoder, direct spatial regression head. "
-             "Diagnostic run to isolate whether soft-argmax was the only failure mode. "
-             "'mobilevit': MobileViT-XXS backbone (ImageNet seed), 4×4 spatial pool, direct regression. "
-             "Primary path forward.",
+             "'tiny': TinyCornerCNN (soft-argmax, CONCLUSIVELY STUCK — do not use). "
+             "'tiny-direct': TinyCornerCNNDirect — diagnostic direct regression on 48K encoder. "
+             "'mobilevit': MobileViT-XXS + 4×4 spatial pool + direct regression (current baseline). "
+             "'simcc': MobileViT-XXS + SimCC 1D coordinate classification head (next experiment).",
     )
     p.add_argument(
         "--results-dir", type=Path, default=None,
