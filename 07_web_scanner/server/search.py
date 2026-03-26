@@ -201,10 +201,17 @@ class ArcFaceSearch:
         checkpoint:   Path to model .pt checkpoint.
     """
 
-    def __init__(self, gallery_npz: Path, manifest_csv: Path, checkpoint: Path) -> None:
+    def __init__(
+        self,
+        gallery_npz: Path,
+        manifest_csv: Path,
+        checkpoint: Path,
+        image_size: int = 224,
+    ) -> None:
         self._gallery_npz = gallery_npz
         self._manifest_csv = manifest_csv
         self._checkpoint = checkpoint
+        self._image_size = image_size
         self._gallery: np.ndarray | None = None   # (n, 128) float32
         self._card_ids: list[str] | None = None
         self._model: Any = None
@@ -219,7 +226,7 @@ class ArcFaceSearch:
         from torchvision import transforms
 
         # Add build path so we can import retrieval.py
-        build_path = str(ROOT / "04_build" / "mobilevit_xxs")
+        build_path = str(ROOT / "04_vectorize" / "mobilevit_xxs")
         if build_path not in sys.path:
             sys.path.insert(0, build_path)
         from retrieval import load_finetuned_model  # noqa: PLC0415
@@ -230,10 +237,13 @@ class ArcFaceSearch:
             else "cpu"
         )
         self._device = device
-        self._model, _ = load_finetuned_model(self._checkpoint, device)
+        self._model, ckpt = load_finetuned_model(self._checkpoint, device)
+        # Prefer image_size from checkpoint args if available; fall back to constructor arg
+        cargs = ckpt.get("args", {})
+        img_size = cargs.get("image_size", self._image_size)
 
         self._transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize((img_size, img_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
@@ -298,7 +308,8 @@ class ArcFaceSearch:
 _PHASH_RE = re.compile(r"phash_(\d+)x(\d+)_(\d+)bit_gallery\.npz$")
 
 # Matches e.g. "mobilevit_xxs_ft_illustration_id_e75_128d_gallery.npz"
-_ARCFACE_RE = re.compile(r"(mobilevit_xxs_ft_illustration_id_e(\d+)_(\d+)d)_gallery\.npz$")
+# and           "mobilevit_xxs_ft_illustration_id+set_code_e15_128d_gallery.npz"
+_ARCFACE_RE = re.compile(r"(mobilevit_xxs_ft_(.+?)_e(\d+)_(\d+)d)_gallery\.npz$")
 
 
 class GallerySearchManager:
@@ -318,15 +329,36 @@ class GallerySearchManager:
         self._phash_dir = phash_gallery_dir or (
             cfg.data_dir / "vectors" / "phash" / "gallery_manifest_artwork_id_manifest"
         )
-        self._arcface_dir = arcface_gallery_dir or (
-            cfg.data_dir / "vectors" / "mobilevit_xxs" / "img224"
-            / "gallery_manifest_artwork_id_manifest"
+        # Each entry: (gallery_dir, manifest_csv, ckpt_dir_hint)
+        # ckpt_dir_hint: if set, checkpoint search is restricted to that specific subdirectory
+        _mt_ckpt_dir = (
+            cfg.data_dir / "results" / "mobilevit_xxs"
+            / "mobilevit_xxs_multitask_illustration_id+set_code_shared_128d+128d"
+              "_mvitxxs_shared2h_arcface_v2light_img448_ph10"
         )
+        self._arcface_scan: list[tuple[Path, Path, Path | None]] = [
+            (
+                cfg.data_dir / "vectors" / "mobilevit_xxs" / "img224"
+                / "gallery_manifest_artwork_id_manifest",
+                cfg.data_dir / "mobilevit_xxs" / "artwork_id_manifest.csv",
+                None,  # search all results/mobilevit_xxs/ subdirs
+            ),
+            (
+                cfg.data_dir / "vectors" / "mobilevit_xxs" / "img448"
+                / "gallery_manifest_manifest",
+                cfg.data_dir / "mobilevit_xxs" / "manifest.csv",
+                _mt_ckpt_dir,  # use the v2light run specifically
+            ),
+        ]
+        # Legacy single-dir override (passed explicitly)
+        if arcface_gallery_dir is not None:
+            self._arcface_scan = [(arcface_gallery_dir, manifest_csv or self._arcface_scan[0][1], None)]
+
         self._manifest = manifest_csv or (
             cfg.data_dir / "mobilevit_xxs" / "artwork_id_manifest.csv"
         )
-        self._ckpt_dir = arcface_checkpoint_dir or (
-            cfg.data_dir / "results" / "mobilevit_xxs" / "mobilevit_xxs_illustration_id_128d"
+        self._results_dir = arcface_checkpoint_dir or (
+            cfg.data_dir / "results" / "mobilevit_xxs"
         )
 
         # Cache of name → PHashSearch | ArcFaceSearch instances
@@ -362,30 +394,37 @@ class GallerySearchManager:
         return results
 
     def list_arcface_identifiers(self) -> list[dict]:
-        """Scan for available ArcFace gallery NPZs.
+        """Scan for available ArcFace gallery NPZs across all gallery directories.
 
         Returns list of {name, label, bytes_per_card}.
         """
-        if not self._arcface_dir.exists():
-            return []
+        seen_names: set[str] = set()
         results = []
-        for path in sorted(self._arcface_dir.glob("*_gallery.npz")):
-            m = _ARCFACE_RE.search(path.name)
-            if not m:
+        for gallery_dir, manifest_csv, ckpt_dir_hint in self._arcface_scan:
+            if not gallery_dir.exists():
                 continue
-            stem = m.group(1)           # e.g. "mobilevit_xxs_ft_illustration_id_e75_128d"
-            epoch = int(m.group(2))
-            dim = int(m.group(3))
-            bytes_per = dim * 4         # float32
-            name = f"arcface_illustration_id_e{epoch}"
-            results.append({
-                "name": name,
-                "label": f"ArcFace epoch {epoch} ({dim}-d, {bytes_per} B/card)",
-                "bytes_per_card": bytes_per,
-                "_path": path,
-                "_stem": stem,
-                "_epoch": epoch,
-            })
+            for path in sorted(gallery_dir.glob("*_gallery.npz")):
+                m = _ARCFACE_RE.search(path.name)
+                if not m:
+                    continue
+                label_field = m.group(2)   # e.g. "illustration_id" or "illustration_id+set_code"
+                epoch = int(m.group(3))
+                dim = int(m.group(4))
+                bytes_per = dim * 4        # float32
+                name = f"arcface_{label_field}_e{epoch}"
+                if name in seen_names:
+                    continue  # prefer first (lower-res) dir if duplicate epoch
+                seen_names.add(name)
+                results.append({
+                    "name": name,
+                    "label": f"ArcFace {label_field} e{epoch} ({dim}-d, {bytes_per} B/card)",
+                    "bytes_per_card": bytes_per,
+                    "_path": path,
+                    "_manifest": manifest_csv,
+                    "_label_field": label_field,
+                    "_epoch": epoch,
+                    "_ckpt_dir_hint": ckpt_dir_hint,
+                })
         return results
 
     def list_all_identifiers(self) -> list[dict]:
@@ -420,17 +459,18 @@ class GallerySearchManager:
         # Check ArcFace
         for item in self.list_arcface_identifiers():
             if item["name"] == name:
-                # Find corresponding checkpoint
                 epoch = item["_epoch"]
-                ckpt = self._find_arcface_checkpoint(epoch)
+                label_field = item["_label_field"]
+                ckpt_dir_hint = item.get("_ckpt_dir_hint")
+                ckpt = self._find_arcface_checkpoint(epoch, label_field, ckpt_dir_hint)
                 if ckpt is None:
                     raise KeyError(
-                        f"ArcFace gallery '{name}' found but no checkpoint for epoch {epoch} "
-                        f"in {self._ckpt_dir}"
+                        f"ArcFace gallery '{name}' found but no matching checkpoint "
+                        f"(epoch {epoch}, label '{label_field}') under {self._results_dir}"
                     )
                 searcher = ArcFaceSearch(
                     gallery_npz=item["_path"],
-                    manifest_csv=self._manifest,
+                    manifest_csv=item["_manifest"],
                     checkpoint=ckpt,
                 )
                 self._cache[name] = searcher
@@ -439,19 +479,34 @@ class GallerySearchManager:
         raise KeyError(f"Identifier '{name}' not available. "
                        f"Available: {[i['name'] for i in self.list_all_identifiers()]}")
 
-    def _find_arcface_checkpoint(self, epoch: int) -> Path | None:
-        """Find the checkpoint .pt file for a given epoch number."""
-        if not self._ckpt_dir.exists():
+    def _find_arcface_checkpoint(
+        self, epoch: int, label_field: str, ckpt_dir_hint: Path | None = None
+    ) -> Path | None:
+        """Find checkpoint .pt file for a given epoch + label field.
+
+        If ckpt_dir_hint is given, look only there (used to pin a specific run).
+        Otherwise scan all results/mobilevit_xxs/ subdirs and prefer dirs whose
+        name contains the full label_field string.
+        """
+        target = f"epoch_{epoch:04d}.pt"
+        if ckpt_dir_hint is not None:
+            ckpt = ckpt_dir_hint / target
+            if ckpt.exists():
+                return ckpt
+            last = ckpt_dir_hint / "last.pt"
+            return last if last.exists() else None
+
+        if not self._results_dir.exists():
             return None
-
-        # Try exact epoch file first
-        exact = self._ckpt_dir / f"epoch_{epoch:04d}.pt"
-        if exact.exists():
-            return exact
-
-        # Try last.pt as fallback (used when epoch matches the last saved epoch)
-        last = self._ckpt_dir / "last.pt"
-        if last.exists():
-            return last
-
+        candidates = []
+        for run_dir in sorted(self._results_dir.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            ckpt = run_dir / target
+            if ckpt.exists():
+                priority = 0 if label_field in run_dir.name else 1
+                candidates.append((priority, run_dir.name, ckpt))
+        if candidates:
+            candidates.sort(key=lambda x: (x[0], x[1]))
+            return candidates[0][2]
         return None

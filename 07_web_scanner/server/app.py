@@ -38,7 +38,7 @@ sys.path.extend([
     str(ROOT),
     str(ROOT / "03_detector"),
     str(ROOT / "03_detector" / "detectors"),
-    str(ROOT / "04_build" / "mobilevit_xxs"),
+    str(ROOT / "04_vectorize" / "mobilevit_xxs"),
 ])
 
 from ccg_card_id.config import cfg  # noqa: E402
