@@ -241,10 +241,8 @@ class Scanner {
   }
 
   _resizeOverlay() {
-    // Size the canvas intrinsic resolution to match its CSS display size so that
-    // canvas coordinates are CSS pixels — required for the cover-offset math below.
-    this.overlay.width  = this.overlay.clientWidth  || this.video.videoWidth;
-    this.overlay.height = this.overlay.clientHeight || this.video.videoHeight;
+    this.overlay.width  = this.video.videoWidth  || this.video.clientWidth;
+    this.overlay.height = this.video.videoHeight || this.video.clientHeight;
   }
 
   // ------------------------------------------------------------------
@@ -417,24 +415,30 @@ class Scanner {
   // ------------------------------------------------------------------
 
   _drawCorners(corners) {
-    const cw = this.overlay.width;   // = CSS display width (see _resizeOverlay)
-    const ch = this.overlay.height;  // = CSS display height
-    this.ctx.clearRect(0, 0, cw, ch);
+    // Canvas intrinsic size = native video resolution (set by _resizeOverlay).
+    // The browser non-uniformly stretches the canvas to fill its CSS box, but
+    // the video uses object-fit:cover (uniform scale + symmetric crop).
+    // We must compensate: compute where each normalised corner lands in CSS pixels
+    // under the cover transform, then convert back to canvas intrinsic pixels.
+    const vw = this.overlay.width;   // = videoWidth  (canvas intrinsic)
+    const vh = this.overlay.height;  // = videoHeight
+    this.ctx.clearRect(0, 0, vw, vh);
 
     if (!corners || corners.length !== 4) return;
 
-    // The video uses object-fit:cover — it is uniformly scaled to fill (cw×ch),
-    // with excess cropped symmetrically.  Map normalised corner coords through
-    // the same transform so the overlay aligns with what the camera actually shows.
-    const vw = this.video.videoWidth  || cw;
-    const vh = this.video.videoHeight || ch;
-    const coverScale = Math.max(cw / vw, ch / vh);
-    const ox = (cw - vw * coverScale) / 2;  // negative = left/right crop offset
-    const oy = (ch - vh * coverScale) / 2;  // negative = top/bottom crop offset
+    const cssW = this.overlay.clientWidth;
+    const cssH = this.overlay.clientHeight;
+    if (!cssW || !cssH) return;
 
+    // object-fit:cover: uniform scale to fill container, excess cropped centrally
+    const scale = Math.max(cssW / vw, cssH / vh);
+    const ox = (cssW - vw * scale) / 2;   // CSS px offset (negative when cropped)
+    const oy = (cssH - vh * scale) / 2;
+
+    // corner CSS position → canvas intrinsic pixel (browser will scale back to CSS)
     const pts = corners.map(([x, y]) => [
-      x * vw * coverScale + ox,
-      y * vh * coverScale + oy,
+      (x * vw * scale + ox) * (vw / cssW),
+      (y * vh * scale + oy) * (vh / cssH),
     ]);
 
     this.ctx.beginPath();
