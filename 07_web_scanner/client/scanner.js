@@ -241,8 +241,10 @@ class Scanner {
   }
 
   _resizeOverlay() {
-    this.overlay.width  = this.video.videoWidth  || this.video.clientWidth;
-    this.overlay.height = this.video.videoHeight || this.video.clientHeight;
+    // Size the canvas intrinsic resolution to match its CSS display size so that
+    // canvas coordinates are CSS pixels — required for the cover-offset math below.
+    this.overlay.width  = this.overlay.clientWidth  || this.video.videoWidth;
+    this.overlay.height = this.overlay.clientHeight || this.video.videoHeight;
   }
 
   // ------------------------------------------------------------------
@@ -415,14 +417,25 @@ class Scanner {
   // ------------------------------------------------------------------
 
   _drawCorners(corners) {
-    const cw = this.overlay.width;
-    const ch = this.overlay.height;
+    const cw = this.overlay.width;   // = CSS display width (see _resizeOverlay)
+    const ch = this.overlay.height;  // = CSS display height
     this.ctx.clearRect(0, 0, cw, ch);
 
     if (!corners || corners.length !== 4) return;
 
-    // Scale normalised coords to canvas pixels
-    const pts = corners.map(([x, y]) => [x * cw, y * ch]);
+    // The video uses object-fit:cover — it is uniformly scaled to fill (cw×ch),
+    // with excess cropped symmetrically.  Map normalised corner coords through
+    // the same transform so the overlay aligns with what the camera actually shows.
+    const vw = this.video.videoWidth  || cw;
+    const vh = this.video.videoHeight || ch;
+    const coverScale = Math.max(cw / vw, ch / vh);
+    const ox = (cw - vw * coverScale) / 2;  // negative = left/right crop offset
+    const oy = (ch - vh * coverScale) / 2;  // negative = top/bottom crop offset
+
+    const pts = corners.map(([x, y]) => [
+      x * vw * coverScale + ox,
+      y * vh * coverScale + oy,
+    ]);
 
     this.ctx.beginPath();
     this.ctx.moveTo(pts[0][0], pts[0][1]);
