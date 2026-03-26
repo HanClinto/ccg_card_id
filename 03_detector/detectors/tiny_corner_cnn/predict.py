@@ -27,19 +27,25 @@ sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_DETECTOR_DIR))
 
 from base import CardDetector, DetectionResult, sort_corners_canonical
-from model import TinyCornerCNN, MobileViTCornerDetector
+from model import TinyCornerCNN, MobileViTCornerDetector, SimCCCornerDetector
 
-_ARCH_MAP = {"tiny": TinyCornerCNN, "mobilevit": MobileViTCornerDetector}
+_ARCH_MAP = {
+    "tiny":      TinyCornerCNN,
+    "mobilevit": MobileViTCornerDetector,
+    "simcc":     SimCCCornerDetector,
+}
 
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD  = [0.229, 0.224, 0.225]
-INPUT_SIZE     = 448
+_DEFAULT_INPUT_SIZE = 448
 
-_PREPROCESS = transforms.Compose([
-    transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
-    transforms.ToTensor(),
-    transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
-])
+
+def _make_preprocess(input_size: int) -> transforms.Compose:
+    return transforms.Compose([
+        transforms.Resize((input_size, input_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
+    ])
 
 
 class NeuralCornerDetectorInference(CardDetector):
@@ -80,6 +86,9 @@ class NeuralCornerDetectorInference(CardDetector):
 
         self._arch  = arch
         self._epoch = ckpt.get("epoch", "?")
+        # SimCC: input size == num_bins (384); others default to 448
+        self._input_size = getattr(self.model, "num_bins", _DEFAULT_INPUT_SIZE)
+        self._preprocess = _make_preprocess(self._input_size)
 
     def detect(self, image: np.ndarray, gallery=None) -> DetectionResult:
         """Detect card corners in a BGR image.
@@ -96,15 +105,19 @@ class NeuralCornerDetectorInference(CardDetector):
         # Convert BGR → RGB PIL image
         img_rgb = Image.fromarray(image[:, :, ::-1])
 
-        tensor = _PREPROCESS(img_rgb).unsqueeze(0).to(self.device)  # (1, 3, 224, 224)
+        tensor = self._preprocess(img_rgb).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
             out = self.model(tensor)
 
-        # TinyCornerCNN returns (corners, presence, heatmaps); MobileViT returns (corners, presence)
+        # TinyCornerCNN: (corners, presence, heatmaps)
+        # MobileViT:     (corners, presence)
+        # SimCC:         (corners, presence, coord_logits)  — coord_logits is a list, not a tensor
         pred_corners          = out[0]
         pred_presence_logit   = out[1]
-        heatmaps              = out[2] if len(out) == 3 else None
+        raw_out2              = out[2] if len(out) == 3 else None
+        # Only use out[2] as heatmaps if it's a single tensor (TinyCornerCNN); SimCC returns a list
+        heatmaps              = raw_out2 if isinstance(raw_out2, torch.Tensor) else None
 
         presence_prob = float(torch.sigmoid(pred_presence_logit).squeeze())
 

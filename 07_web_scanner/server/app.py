@@ -119,28 +119,42 @@ def _discover_detectors() -> list[dict]:
 
     detectors = [{"name": "canny", "label": "Canny edge detector"}]
 
-    ckpt_dir = cfg.data_dir / "results" / "corner_detector_tiny"
-    if ckpt_dir.exists():
+    def _add_ckpts_from_dir(ckpt_dir: Path, name_prefix: str, label_prefix: str) -> None:
+        if not ckpt_dir.exists():
+            return
         for ckpt in sorted(ckpt_dir.glob("epoch_*.pt")):
-            # epoch_0050.pt → epoch number 50 → name tinycornercnn_e50
-            stem = ckpt.stem  # "epoch_0050"
+            stem = ckpt.stem  # "epoch_0015"
             try:
                 epoch = int(stem.split("_")[1])
             except (IndexError, ValueError):
                 continue
             detectors.append({
-                "name": f"tinycornercnn_e{epoch}",
-                "label": f"Neural corner CNN (epoch {epoch})",
+                "name": f"{name_prefix}_e{epoch}",
+                "label": f"{label_prefix} (epoch {epoch})",
                 "_ckpt": ckpt,
             })
-        # Also include last.pt as a named option
-        last = ckpt_dir / "last.pt"
-        if last.exists():
-            detectors.append({
-                "name": "tinycornercnn_last",
-                "label": "Neural corner CNN (last checkpoint)",
-                "_ckpt": last,
-            })
+
+    # Legacy tiny-CNN run directory
+    _add_ckpts_from_dir(
+        cfg.data_dir / "results" / "corner_detector_tiny",
+        name_prefix="tinycornercnn",
+        label_prefix="Neural corner CNN",
+    )
+
+    # Current runs under results/corner_detector/<run_name>/
+    corner_det_root = cfg.data_dir / "results" / "corner_detector"
+    if corner_det_root.exists():
+        for run_dir in sorted(corner_det_root.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            _add_ckpts_from_dir(run_dir, name_prefix=run_dir.name, label_prefix=run_dir.name)
+            last = run_dir / "last.pt"
+            if last.exists():
+                detectors.append({
+                    "name": f"{run_dir.name}_last",
+                    "label": f"{run_dir.name} (last checkpoint)",
+                    "_ckpt": last,
+                })
 
     _available_detectors = detectors
     return detectors
