@@ -90,12 +90,22 @@ class NeuralCornerDetectorInference(CardDetector):
         self._input_size = getattr(self.model, "num_bins", _DEFAULT_INPUT_SIZE)
         self._preprocess = _make_preprocess(self._input_size)
 
-    def detect(self, image: np.ndarray, gallery=None) -> DetectionResult:
+    def detect(
+        self,
+        image: np.ndarray,
+        gallery=None,
+        return_heatmaps: bool = False,
+    ) -> DetectionResult:
         """Detect card corners in a BGR image.
 
         Args:
-            image:   HxWx3 uint8 BGR image (OpenCV convention).
-            gallery: Unused. Accepted for interface compatibility.
+            image:           HxWx3 uint8 BGR image (OpenCV convention).
+            gallery:         Unused. Accepted for interface compatibility.
+            return_heatmaps: If True and the model is SimCC, include per-corner
+                             1D coordinate distributions in metadata under
+                             "simcc_heatmaps" (dict with keys "heatmap_x" and
+                             "heatmap_y", each a list of 4 float32 arrays of
+                             length num_bins ordered TL, TR, BR, BL).
 
         Returns:
             DetectionResult with normalized corners in canonical order
@@ -132,6 +142,27 @@ class NeuralCornerDetectorInference(CardDetector):
             peak_logits = heatmaps.squeeze(0).amax(dim=(-2, -1))  # (4,)
             corner_confidences = torch.sigmoid(peak_logits).cpu().numpy().tolist()
 
+        # SimCC: extract 1D coordinate distributions for sharpness scoring + optional visualization
+        simcc_heatmaps = None
+        simcc_sharpness = None
+        if raw_out2 is not None and not isinstance(raw_out2, torch.Tensor):
+            coord_logits = raw_out2  # list of 8 tensors [x0,y0,x1,y1,x2,y2,x3,y3] → TL,TR,BR,BL
+            hm_x, hm_y = [], []
+            peaks = []
+            for i in range(4):
+                xp = torch.softmax(coord_logits[i * 2].squeeze(0), dim=0).cpu().numpy().astype(np.float32)
+                yp = torch.softmax(coord_logits[i * 2 + 1].squeeze(0), dim=0).cpu().numpy().astype(np.float32)
+                hm_x.append(xp)
+                hm_y.append(yp)
+                peaks.append(float(xp.max()))
+                peaks.append(float(yp.max()))
+            simcc_sharpness = {
+                "mean_peak": float(np.mean(peaks)),
+                "min_peak":  float(np.min(peaks)),
+            }
+            if return_heatmaps:
+                simcc_heatmaps = {"heatmap_x": hm_x, "heatmap_y": hm_y}
+
         if not self.ignore_presence and presence_prob < self.presence_threshold:
             return DetectionResult(
                 card_present=False,
@@ -145,9 +176,11 @@ class NeuralCornerDetectorInference(CardDetector):
             corners=corners,
             confidence=presence_prob,
             metadata={
-                "presence_prob": presence_prob,
-                "epoch": self._epoch,
+                "presence_prob":   presence_prob,
+                "epoch":           self._epoch,
                 "corner_confidences": corner_confidences,
+                "simcc_sharpness": simcc_sharpness,
+                "simcc_heatmaps":  simcc_heatmaps,
             },
         )
 

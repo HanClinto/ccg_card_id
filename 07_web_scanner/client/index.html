@@ -22,7 +22,7 @@
         <!-- Corner overlay drawn on top of the video -->
         <canvas id="overlay"></canvas>
         <!-- Confidence badge -->
-        <div id="confidence-badge" class="confidence-badge hidden">–</div>
+        <div id="confidence-badge" class="confidence-badge" style="display:none">–</div>
       </div>
 
       <!-- Settings panel -->
@@ -35,32 +35,62 @@
         </div>
 
         <div class="field-row">
-          <label for="detector-select">Detector</label>
-          <select id="detector-select">
-            <option value="canny">Canny (loading…)</option>
-          </select>
-        </div>
-
-        <div class="field-row">
-          <label for="identifier-select">Identifier</label>
-          <select id="identifier-select">
-            <option value="phash_16x16">pHash 16×16 (loading…)</option>
-          </select>
-        </div>
-
-        <div class="field-row">
           <label for="fps-slider">FPS: <span id="fps-value">3</span></label>
           <input type="range" id="fps-slider" min="1" max="10" value="3" />
         </div>
 
-        <div class="field-row">
-          <label for="fill-at">Confirm after N matches</label>
-          <input type="number" id="fill-at" min="1" max="10" value="3" />
+        <!-- ── Detector ─────────────────────────────────────────────── -->
+        <div class="settings-group">
+          <div class="settings-group-label">Detector</div>
+
+          <div class="field-row">
+            <label for="detector-select">Model</label>
+            <select id="detector-select">
+              <option value="canny">Canny (loading…)</option>
+            </select>
+          </div>
+
+          <div class="field-row" id="sharpness-row">
+            <label for="sharpness-threshold">Min sharpness: <span id="sharpness-threshold-value">3</span>%</label>
+            <input type="range" id="sharpness-threshold" min="0" max="30" value="3" />
+          </div>
+
+          <div class="field-row">
+            <label for="heatmap-toggle">Show heatmaps</label>
+            <input type="checkbox" id="heatmap-toggle" />
+          </div>
+
+          <div class="field-row" id="heatmap-opacity-row" style="display:none">
+            <label for="heatmap-opacity">Opacity: <span id="heatmap-opacity-value">40</span>%</label>
+            <input type="range" id="heatmap-opacity" min="5" max="100" value="40" />
+          </div>
         </div>
 
-        <div class="field-row">
-          <label for="cooldown-ms">Cooldown (ms)</label>
-          <input type="number" id="cooldown-ms" min="500" max="30000" step="500" value="4000" />
+        <!-- ── Identifier ───────────────────────────────────────────── -->
+        <div class="settings-group">
+          <div class="settings-group-label">Identifier</div>
+
+          <div class="field-row">
+            <label for="identifier-select">Model</label>
+            <select id="identifier-select">
+              <option value="phash_16x16">pHash 16×16 (loading…)</option>
+            </select>
+          </div>
+
+          <div class="field-row">
+            <label for="confidence-threshold">Min confidence: <span id="confidence-threshold-value">0</span>%</label>
+            <input type="range" id="confidence-threshold" min="0" max="100" value="0" />
+          </div>
+
+          <div class="field-row">
+            <label for="fill-at">Confirm after N matches</label>
+            <input type="number" id="fill-at" min="1" max="10" value="3" />
+          </div>
+
+          <div class="field-row">
+            <label for="cooldown-ms">Cooldown (ms)</label>
+            <input type="number" id="cooldown-ms" min="500" max="30000" step="500" value="4000" />
+          </div>
         </div>
 
         <div class="btn-row">
@@ -80,17 +110,37 @@
         </div>
       </div>
 
-      <!-- Status bar showing current bucket state -->
-      <div id="bucket-status" class="bucket-status">Ready</div>
+      <!-- Status bar + live crop preview side-by-side -->
+      <div class="status-row">
+        <div id="bucket-status" class="bucket-status">Ready</div>
+        <img id="crop-preview" class="crop-preview hidden" alt="Dewarped card" />
+      </div>
+
+      <!-- Per-frame timing + memory metrics -->
+      <div id="metrics-bar" class="metrics-bar">
+        <span class="metric" id="m-detect"  title="Detection">Det –</span>
+        <span class="metric-sep">·</span>
+        <span class="metric" id="m-identify" title="Identification">ID –</span>
+        <span class="metric-sep">·</span>
+        <span class="metric" id="m-server"  title="Total server time">Srv –</span>
+        <span class="metric-sep">·</span>
+        <span class="metric" id="m-rtt"     title="Client round-trip">RTT –</span>
+        <span class="metric-sep">|</span>
+        <span class="metric" id="m-ram"     title="Process RSS">RAM –</span>
+        <span class="metric" id="m-vram"    title="Device memory" class="hidden"></span>
+      </div>
 
       <!-- Card list — one row per confirmed scan -->
       <textarea id="card-list" readonly placeholder="Confirmed cards will appear here…"></textarea>
 
       <!-- Last confirmed card detail panel -->
       <div id="last-card" class="last-card hidden">
-        <div class="last-card-name" id="last-card-name">–</div>
-        <div class="last-card-meta" id="last-card-meta">–</div>
-        <div class="last-card-price" id="last-card-price">–</div>
+        <img id="last-card-crop" class="last-card-crop" alt="" />
+        <div class="last-card-info">
+          <div class="last-card-name" id="last-card-name">–</div>
+          <div class="last-card-meta" id="last-card-meta">–</div>
+          <div class="last-card-price" id="last-card-price">–</div>
+        </div>
       </div>
     </section>
 

@@ -164,6 +164,22 @@ header h1 {
   letter-spacing: 0.06em;
 }
 
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-group-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .field-row {
   display: flex;
   align-items: center;
@@ -260,7 +276,6 @@ button:disabled {
   padding: 4px 6px;
   background: var(--surface2);
   border-radius: 4px;
-  flex-shrink: 0;
   min-height: 26px;
 }
 
@@ -282,6 +297,55 @@ button:disabled {
   color: var(--text-muted);
 }
 
+/* ── Metrics bar ────────────────────────────────────────────────── */
+
+.metrics-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-family: "Cascadia Mono", "Fira Code", "Consolas", monospace;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+.metric {
+  white-space: nowrap;
+  min-width: 6ch;
+}
+
+.metric-sep {
+  color: var(--border);
+  margin: 0 2px;
+}
+
+/* ── Status row (bucket status + live crop) ─────────────────────── */
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.bucket-status {
+  flex: 1;
+}
+
+.crop-preview {
+  width: 50px;
+  height: 70px;
+  object-fit: cover;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.crop-preview.hidden { display: none; }
+
 /* ── Last confirmed card ────────────────────────────────────────── */
 
 .last-card {
@@ -291,9 +355,26 @@ button:disabled {
   padding: 10px 14px;
   flex-shrink: 0;
   border-left: 3px solid var(--accent);
+  display: flex;
+  gap: 12px;
+  align-items: center;
 }
 
 .last-card.hidden { display: none; }
+
+.last-card-crop {
+  width: 60px;
+  height: 84px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.last-card-info {
+  flex: 1;
+  min-width: 0;
+}
 
 .last-card-name {
   font-size: 1rem;

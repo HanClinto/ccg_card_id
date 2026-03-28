@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +45,7 @@ sys.path.extend([
 
 from ccg_card_id.config import cfg  # noqa: E402
 from card_lookup import make_lookup, CardLookup  # noqa: E402
-from search import GallerySearchManager  # noqa: E402
+from search import GallerySearchManager, _dewarp  # noqa: E402
 
 # Detectors are imported lazily inside _get_detector() to avoid importing
 # PyTorch at startup if only Canny is used.
@@ -90,6 +92,9 @@ if _client_dir.exists():
 # ---------------------------------------------------------------------------
 # Lazy singletons
 # ---------------------------------------------------------------------------
+
+_PREVIEW_W = 200
+_PREVIEW_H = 280
 
 _gallery_manager: GallerySearchManager | None = None
 _lookup: CardLookup | None = None
@@ -214,12 +219,21 @@ def _build_record_response(
     bgr: np.ndarray,
     detector_name: str,
     identifier_name: str,
+    return_heatmaps: bool = False,
+    min_sharpness: float = 0.0,
+    min_confidence: float = 0.0,
 ) -> dict:
     """Run detection + identification on one image, return response dict."""
+    t0 = time.perf_counter()
+
     # ---- Detection ----
     try:
         detector = _get_detector(detector_name)
-        result = detector.detect(bgr)
+        # Pass return_heatmaps only if the detector supports it (NeuralCornerDetectorInference)
+        import inspect  # noqa: PLC0415
+        sig = inspect.signature(detector.detect)
+        kw = {"return_heatmaps": return_heatmaps} if "return_heatmaps" in sig.parameters else {}
+        result = detector.detect(bgr, **kw)
     except HTTPException:
         raise
     except Exception as exc:
@@ -228,15 +242,50 @@ def _build_record_response(
             "card_present": False,
         }
 
+    t1 = time.perf_counter()
+
     if not result.card_present or result.corners is None:
         return {
             "_status": {"code": 200, "text": "OK"},
             "card_present": False,
             "confidence": result.confidence,
             "detector_used": detector_name,
+            "_timing": {"detect_ms": round((t1 - t0) * 1000, 1)},
         }
 
     corners_list = result.corners.tolist()  # [[x,y], ...]
+
+    # ---- SimCC sharpness gate ----
+    sharpness_info = (result.metadata or {}).get("simcc_sharpness")  # None for non-SimCC
+    sharpness_val = sharpness_info["mean_peak"] if sharpness_info else None
+    if sharpness_val is not None and min_sharpness > 0.0 and sharpness_val < min_sharpness:
+        return {
+            "_status":     {"code": 200, "text": "OK"},
+            "card_present": False,
+            "sharpness":   round(sharpness_val, 5),
+            "skip_reason": "low_sharpness",
+            "detector_used": detector_name,
+            "_timing": {"detect_ms": round((t1 - t0) * 1000, 1)},
+        }
+
+    # ---- SimCC heatmaps (optional) ----
+    corner_heatmaps = None
+    simcc_hm = (result.metadata or {}).get("simcc_heatmaps")
+    if simcc_hm is not None:
+        corner_heatmaps = []
+        for i in range(4):
+            combined = np.concatenate([simcc_hm["heatmap_x"][i], simcc_hm["heatmap_y"][i]])
+            corner_heatmaps.append(base64.b64encode(combined.tobytes()).decode())
+
+    # ---- Dewarped preview ----
+    try:
+        preview_bgr = _dewarp(bgr, result.corners, _PREVIEW_W, _PREVIEW_H)
+        ok, buf = cv2.imencode(".jpg", preview_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        crop_jpeg = base64.b64encode(buf.tobytes()).decode() if ok else None
+    except Exception:
+        crop_jpeg = None
+
+    t2 = time.perf_counter()
 
     # ---- Identification ----
     try:
@@ -250,15 +299,23 @@ def _build_record_response(
             "_status": {"code": 400, "text": f"Identification error: {exc}"},
             "card_present": True,
             "corners": corners_list,
+            "crop_jpeg": crop_jpeg,
             "detector_used": detector_name,
+            "_timing": {"detect_ms": round((t1 - t0) * 1000, 1),
+                        "preview_ms": round((t2 - t1) * 1000, 1)},
         }
+
+    t3 = time.perf_counter()
 
     if search_result is None:
         return {
             "_status": {"code": 503, "text": "Gallery not available"},
             "card_present": True,
             "corners": corners_list,
+            "crop_jpeg": crop_jpeg,
             "detector_used": detector_name,
+            "_timing": {"detect_ms": round((t1 - t0) * 1000, 1),
+                        "preview_ms": round((t2 - t1) * 1000, 1)},
         }
 
     # ---- Metadata lookup ----
@@ -267,20 +324,39 @@ def _build_record_response(
     # Confidence: for pHash invert distance to a [0,1] score (lower distance =
     # higher confidence).  For cosine similarity use the score directly.
     if search_result.score_type == "hamming":
-        # Max possible Hamming distance for this hash
-        bits = 8 * int(len(np.packbits(
-            np.zeros(16 * 16, dtype=np.uint8)  # rough upper bound via hash_size
-        )))
-        # Use a simpler heuristic: map distance 0→1.0, distance 64→0.0 for 16x16
-        # The actual max bits in the stored hash determines the ceiling.
         confidence = max(0.0, 1.0 - search_result.score / 256.0)
     else:
         confidence = float(search_result.score)
+
+    t4 = time.perf_counter()
+
+    if min_confidence > 0.0 and confidence < min_confidence:
+        return {
+            "_status":       {"code": 200, "text": "OK"},
+            "card_present":  True,
+            "corners":       corners_list,
+            "crop_jpeg":     crop_jpeg,
+            "corner_heatmaps": corner_heatmaps,
+            "sharpness":     round(sharpness_val, 5) if sharpness_val is not None else None,
+            "confidence":    round(confidence, 4),
+            "skip_reason":   "low_confidence",
+            "detector_used": detector_name,
+            "_timing": {
+                "detect_ms":   round((t1 - t0) * 1000, 1),
+                "preview_ms":  round((t2 - t1) * 1000, 1),
+                "identify_ms": round((t3 - t2) * 1000, 1),
+                "lookup_ms":   round((t4 - t3) * 1000, 1),
+                "total_ms":    round((t4 - t0) * 1000, 1),
+            },
+        }
 
     return {
         "_status": {"code": 200, "text": "OK"},
         "card_present": True,
         "corners": corners_list,
+        "crop_jpeg": crop_jpeg,
+        "corner_heatmaps": corner_heatmaps,
+        "sharpness": round(sharpness_val, 5) if sharpness_val is not None else None,
         "card_name": card_info.get("card_name"),
         "set_code": card_info.get("set_code"),
         "set_name": card_info.get("set_name"),
@@ -290,6 +366,13 @@ def _build_record_response(
         "confidence": round(confidence, 4),
         "identifier_used": identifier_name,
         "detector_used": detector_name,
+        "_timing": {
+            "detect_ms":   round((t1 - t0) * 1000, 1),
+            "preview_ms":  round((t2 - t1) * 1000, 1),
+            "identify_ms": round((t3 - t2) * 1000, 1),
+            "lookup_ms":   round((t4 - t3) * 1000, 1),
+            "total_ms":    round((t4 - t0) * 1000, 1),
+        },
     }
 
 
@@ -313,6 +396,40 @@ def health() -> dict:
         "detectors_available": len(detectors),
         "identifiers_available": len(identifiers),
     }
+
+
+@app.get("/v1/memory")
+def memory_usage() -> dict:
+    """Return current process and device memory usage."""
+    result: dict = {}
+
+    # Process RSS via psutil (optional dependency)
+    try:
+        import psutil  # noqa: PLC0415
+        proc = psutil.Process(os.getpid())
+        result["process_rss_mb"] = round(proc.memory_info().rss / 1024 / 1024, 1)
+    except ImportError:
+        pass
+
+    # Torch device memory
+    try:
+        import torch  # noqa: PLC0415
+        if torch.backends.mps.is_available():
+            result["device"] = "mps"
+            result["device_allocated_mb"] = round(
+                torch.mps.current_allocated_memory() / 1024 / 1024, 1)
+            result["device_driver_mb"] = round(
+                torch.mps.driver_allocated_memory() / 1024 / 1024, 1)
+        elif torch.cuda.is_available():
+            result["device"] = "cuda"
+            result["device_allocated_mb"] = round(
+                torch.cuda.memory_allocated() / 1024 / 1024, 1)
+            result["device_reserved_mb"] = round(
+                torch.cuda.memory_reserved() / 1024 / 1024, 1)
+    except Exception:
+        pass
+
+    return result
 
 
 @app.get("/v1/detectors")
@@ -359,10 +476,15 @@ async def identify(body: dict) -> dict:
 
         detector_name = rec.get("detector") or DEFAULT_DETECTOR
         identifier_name = rec.get("identifier") or DEFAULT_IDENTIFIER
+        want_heatmaps   = bool(rec.get("heatmaps", False))
+        min_sharpness   = float(rec.get("min_sharpness", 0.0))
+        min_confidence  = float(rec.get("min_confidence", 0.0))
 
         try:
             bgr = _decode_image(b64)
-            record_resp = _build_record_response(bgr, detector_name, identifier_name)
+            record_resp = _build_record_response(
+                bgr, detector_name, identifier_name,
+                want_heatmaps, min_sharpness, min_confidence)
         except HTTPException as exc:
             record_resp = {
                 "_status": {"code": exc.status_code, "text": exc.detail},
