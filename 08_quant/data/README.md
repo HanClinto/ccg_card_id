@@ -11,15 +11,37 @@ No PyTorch required. Runs on Raspberry Pi, desktop, or any platform with `onnxru
 
 ## Install
 
+Minimum Python 3.9. Installing into the global environment is blocked on modern
+Raspberry Pi OS (PEP 668). Use a virtual environment instead.
+
+### Option A — uv (recommended, fast)
+
 ```bash
+# Install uv (one-time, installs to ~/.local/bin)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env   # or re-open the shell
+
+# Create venv and install deps in one step
+uv venv .venv
+uv pip install -r requirements.txt --python .venv/bin/python
+
+# Activate for subsequent commands
+source .venv/bin/activate
+```
+
+### Option B — standard venv
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Minimum Python 3.9. On Raspberry Pi, prefer the `onnxruntime` wheel from PyPI
-(not the Debian package) for the latest version:
+Once the venv is active, run `benchmark.py` as shown below. To skip manual
+activation, prefix commands with `.venv/bin/python`:
 
 ```bash
-pip install onnxruntime numpy opencv-python psutil
+.venv/bin/python benchmark.py --help
 ```
 
 ---
