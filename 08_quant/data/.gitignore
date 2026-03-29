@@ -1,0 +1,4 @@
+# Model weights and gallery — large binaries, not tracked in git
+*.onnx
+*.onnx.data
+*.npz
