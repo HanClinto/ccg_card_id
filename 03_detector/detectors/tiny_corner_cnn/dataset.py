@@ -26,8 +26,9 @@ Corner column order (both sources): TL, TR, BR, BL — normalized (x, y) in
 [0, 1] relative to image dimensions, produced by the standard sum/diff sort.
 
 Augmentation (training only):
-  Spatial : 90°/180°/270° random rotation
+  Spatial : Full 0–360° random rotation (uniform)
             → corner coordinates are transformed accordingly.
+            Black fill is used for out-of-frame pixels after rotation.
   Color   : ColorJitter (brightness/contrast/saturation/hue).
 """
 from __future__ import annotations
@@ -60,6 +61,55 @@ INPUT_SIZE     = 384
 # Loaders
 # ---------------------------------------------------------------------------
 
+# Slugs whose first character falls in this set are assigned to val.
+# YouTube slugs are base64url so each character covers ~1.6% of slugs.
+# X, Y, Z → ~4.8% val — stable, additive, and visually identifiable from
+# the folder name without any computation.
+_VAL_FIRST_CHARS: frozenset[str] = frozenset("XYZ")
+
+# Cached split overrides: loaded once from split_overrides.json.
+# Keys: 'val' (slugs pinned to val), 'force_train' (slugs pinned to train).
+# Overrides take priority over the first-character rule, preserving the
+# train/val assignment of all videos that existed before the hash rule
+# was introduced — so adding new videos never contaminates existing splits.
+_split_overrides: dict[str, frozenset[str]] | None = None
+
+
+def _load_split_overrides(db_path: "Path") -> dict[str, frozenset[str]]:
+    global _split_overrides
+    if _split_overrides is not None:
+        return _split_overrides
+    import json
+    override_path = db_path.parent / "split_overrides.json"
+    if override_path.exists():
+        data = json.loads(override_path.read_text())
+        _split_overrides = {
+            "val":         frozenset(data.get("val", [])),
+            "force_train": frozenset(data.get("force_train", [])),
+        }
+    else:
+        _split_overrides = {"val": frozenset(), "force_train": frozenset()}
+    return _split_overrides
+
+
+def _slug_is_val(slug: str, db_path: "Path | None" = None) -> bool:
+    """Return True if this slug belongs to the val split.
+
+    Priority:
+      1. split_overrides.json 'val' list       → always val
+      2. split_overrides.json 'force_train'    → always train
+      3. first character in XYZ               → val
+      4. everything else                       → train
+    """
+    if db_path is not None:
+        overrides = _load_split_overrides(db_path)
+        if slug in overrides["val"]:
+            return True
+        if slug in overrides["force_train"]:
+            return False
+    return bool(slug) and slug[0] in _VAL_FIRST_CHARS
+
+
 def load_from_packopening_db(
     db_path: Path,
     data_dir: Path,
@@ -67,6 +117,7 @@ def load_from_packopening_db(
     val_frac: float = 0.05,
     seed: int = 42,
     max_phash_dist: int = 20,
+    min_phash_dist: int = 0,
 ) -> tuple[list[dict], list[dict]]:
     """Load SIFT-verified frames from the packopening DB.
 
@@ -83,6 +134,15 @@ def load_from_packopening_db(
     Default max_phash_dist=20 keeps ~89% of frames (~340k) while excluding
     the clearly suspect tail. Frames with NULL phash_dist are also excluded
     (228 frames where pHash was not computed).
+
+    min_phash_dist (default 0): exclude frames with pHash distance below this
+    threshold. Filters reference-image overlays where SIFT matched a card image
+    displayed on-screen rather than a physical card being opened — those frames
+    have near-zero pHash distance (nearly identical to the Scryfall reference)
+    but corners that describe the overlay position, not a real card.
+
+    Train/val split: assigned per video slug via a stable hash, so adding new
+    videos never changes the assignment of existing ones.
 
     Negative examples: random frames sampled from videos in 'frames_extracted'
     status (frames extracted but no SIFT match found).
@@ -103,8 +163,8 @@ def load_from_packopening_db(
         "FROM frames "
         "WHERE corner0_x IS NOT NULL AND corner1_x IS NOT NULL "
         "  AND corner2_x IS NOT NULL AND corner3_x IS NOT NULL "
-        "  AND phash_dist IS NOT NULL AND phash_dist <= ?",
-        (max_phash_dist,),
+        "  AND phash_dist IS NOT NULL AND phash_dist <= ? AND phash_dist >= ?",
+        (max_phash_dist, min_phash_dist),
     ).fetchall()
 
     # Group positive frames by video slug (extracted from frame_path:
@@ -127,12 +187,9 @@ def load_from_packopening_db(
             "corners":      corners,
         })
 
-    # Split by video slug so no video's frames appear in both train and val
-    slugs = sorted(video_to_frames.keys())
-    rng.shuffle(slugs)
-    n_val_videos = max(1, int(len(slugs) * val_frac))
-    val_slugs  = set(slugs[:n_val_videos])
-    train_slugs = set(slugs[n_val_videos:])
+    # Stable per-slug assignment — overrides freeze existing split, XYZ rule handles new slugs
+    val_slugs   = {s for s in video_to_frames if _slug_is_val(s, db_path)}
+    train_slugs = {s for s in video_to_frames if s not in val_slugs}
 
     train_positives = [f for s in train_slugs for f in video_to_frames[s]]
     val_positives   = [f for s in val_slugs   for f in video_to_frames[s]]
@@ -367,12 +424,14 @@ class CornerDataset(Dataset):
     ) -> tuple[Image.Image, np.ndarray | None]:
         import torchvision.transforms.functional as TF
 
-        # Random 90°/180°/270° rotation (25% chance each, 25% chance no rotation)
-        k = random.randint(0, 3)
-        if k > 0:
-            img = TF.rotate(img, angle=90 * k, expand=False)
+        # Full random rotation: uniform 0–360° so the model sees cards at all
+        # orientations, including the 45°-diagonal dead zone that the previous
+        # 90°-increment-only augmentation never covered.
+        angle = random.uniform(0.0, 360.0)
+        if angle > 0.5:
+            img = TF.rotate(img, angle=angle, expand=False, fill=0)
             if corners is not None:
-                corners = _rotate_corners(corners, 90.0 * k, cx=0.5, cy=0.5)
+                corners = _rotate_corners(corners, angle, cx=0.5, cy=0.5)
 
         # Restore canonical corner order (TL→TR→BR→BL) after augmentation.
         # This ensures the direct per-channel loss in training always sees
