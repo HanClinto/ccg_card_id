@@ -427,11 +427,26 @@ class CornerDataset(Dataset):
         # Full random rotation: uniform 0–360° so the model sees cards at all
         # orientations, including the 45°-diagonal dead zone that the previous
         # 90°-increment-only augmentation never covered.
+        #
+        # For positive examples (corners is not None) we compute the rotated
+        # corner positions BEFORE touching the image and only proceed when all
+        # four corners remain within [0, 1].  Applying the rotation and then
+        # clipping out-of-bounds corners to the image edge would give the model
+        # wrong labels: the image correctly shows the card corner is gone, but
+        # the label would say it is at the edge of the frame.  This is common
+        # even for moderately centred cards at 45° (a corner at (0.85, 0.90)
+        # is ~0.53 from centre; rotating 45° pushes it to y≈1.03).
         angle = random.uniform(0.0, 360.0)
         if angle > 0.5:
-            img = TF.rotate(img, angle=angle, expand=False, fill=0)
             if corners is not None:
-                corners = _rotate_corners(corners, angle, cx=0.5, cy=0.5)
+                candidate = _rotate_corners(corners, angle, cx=0.5, cy=0.5)
+                if np.all((candidate >= 0.0) & (candidate <= 1.0)):
+                    img = TF.rotate(img, angle=angle, expand=False, fill=0)
+                    corners = candidate
+                # else: card too close to edge for this angle — skip rotation
+            else:
+                # Negative example: no corner label to corrupt, always safe.
+                img = TF.rotate(img, angle=angle, expand=False, fill=0)
 
         # Restore canonical corner order (TL→TR→BR→BL) after augmentation.
         # This ensures the direct per-channel loss in training always sees
@@ -444,11 +459,17 @@ class CornerDataset(Dataset):
 
 
 def _rotate_corners(corners: np.ndarray, angle_deg: float, cx: float, cy: float) -> np.ndarray:
-    """Rotate normalized corner coordinates around centre (cx, cy)."""
+    """Rotate normalised corner coordinates around centre (cx, cy).
+
+    Returns the mathematically correct rotated positions without clipping —
+    values outside [0, 1] indicate the corner has left the image frame.
+    Callers are responsible for checking bounds before using the result as
+    a training label.
+    """
     rad = np.deg2rad(-angle_deg)
     cos_a, sin_a = np.cos(rad), np.sin(rad)
     shifted = corners - np.array([cx, cy])
     rotated = shifted @ np.array([[cos_a, -sin_a], [sin_a, cos_a]]).T
-    return np.clip(rotated + np.array([cx, cy]), 0.0, 1.0).astype(np.float32)
+    return (rotated + np.array([cx, cy])).astype(np.float32)
 
 
