@@ -29,6 +29,8 @@ Augmentation (training only):
   Spatial : Full 0–360° random rotation (uniform)
             → corner coordinates are transformed accordingly.
             Black fill is used for out-of-frame pixels after rotation.
+            Random perspective warp (distortion 5–35% of min dimension)
+            simulating 3D card tilt; same bounds-check-first pattern.
   Color   : ColorJitter (brightness/contrast/saturation/hue).
 """
 from __future__ import annotations
@@ -448,6 +450,30 @@ class CornerDataset(Dataset):
                 # Negative example: no corner label to corrupt, always safe.
                 img = TF.rotate(img, angle=angle, expand=False, fill=0)
 
+        # Random perspective transform simulating 3D card tilt.
+        # Same bounds-check-first pattern as rotation: compute where the corners
+        # would land BEFORE applying the warp; only proceed if all four stay in
+        # [0, 1].  Distortion scale is sampled uniformly from [0.05, 0.35] so
+        # the model sees everything from a slight lean to an extreme tilt.
+        W, H = img.size
+        distortion = random.uniform(0.05, 0.35)
+        scale = distortion * min(W, H)
+        startpoints = [[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1]]
+        endpoints = [
+            [random.uniform(0, scale),           random.uniform(0, scale)],
+            [random.uniform(W - 1 - scale, W - 1), random.uniform(0, scale)],
+            [random.uniform(W - 1 - scale, W - 1), random.uniform(H - 1 - scale, H - 1)],
+            [random.uniform(0, scale),           random.uniform(H - 1 - scale, H - 1)],
+        ]
+        if corners is not None:
+            candidate = _perspective_corners(corners, startpoints, endpoints, W, H)
+            if np.all((candidate >= 0.0) & (candidate <= 1.0)):
+                img = TF.perspective(img, startpoints, endpoints, fill=0)
+                corners = candidate
+            # else: warp would push a corner off-frame — skip
+        else:
+            img = TF.perspective(img, startpoints, endpoints, fill=0)
+
         # Restore canonical corner order (TL→TR→BR→BL) after augmentation.
         # This ensures the direct per-channel loss in training always sees
         # consistently ordered corners regardless of flip/rotation applied.
@@ -471,5 +497,33 @@ def _rotate_corners(corners: np.ndarray, angle_deg: float, cx: float, cy: float)
     shifted = corners - np.array([cx, cy])
     rotated = shifted @ np.array([[cos_a, -sin_a], [sin_a, cos_a]]).T
     return (rotated + np.array([cx, cy])).astype(np.float32)
+
+
+def _perspective_corners(
+    corners: np.ndarray,
+    startpoints: list[list[int]],
+    endpoints: list[list[float]],
+    W: int,
+    H: int,
+) -> np.ndarray:
+    """Apply a perspective homography to normalised corner coordinates.
+
+    `startpoints` / `endpoints` are in pixel space (as expected by
+    torchvision's TF.perspective and cv2.getPerspectiveTransform).
+    Returns normalised [0, 1] coordinates; values outside that range indicate
+    a corner left the frame.  No clipping is applied — callers must check.
+    """
+    import cv2
+
+    M = cv2.getPerspectiveTransform(
+        np.float32(startpoints), np.float32(endpoints)
+    )
+    corners_px = corners * np.array([W, H], dtype=np.float32)          # (4,2)
+    ones = np.ones((4, 1), dtype=np.float32)
+    corners_hom = np.hstack([corners_px, ones])                         # (4,3)
+    transformed = (M @ corners_hom.T).T                                 # (4,3)
+    w_coord = transformed[:, 2:3].clip(1e-8)
+    corners_new_px = transformed[:, :2] / w_coord
+    return (corners_new_px / np.array([W, H], dtype=np.float32)).astype(np.float32)
 
 
