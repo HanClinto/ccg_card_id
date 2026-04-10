@@ -541,6 +541,7 @@ def run(args: argparse.Namespace) -> None:
             neg_sample_n=0 if args.positives_only else args.neg_sample_n,
             val_frac=0.05,
             max_phash_dist=args.max_phash_dist,
+            min_phash_dist=args.min_phash_dist,
         )
         # Always evaluate on clint as the held-out test domain
         test_rows = load_clint_as_test(clint_csv, clint_neg, data_dir) if clint_csv.exists() else []
@@ -555,6 +556,11 @@ def run(args: argparse.Namespace) -> None:
     if args.max_train_samples and len(train_rows) > args.max_train_samples:
         train_rows = train_rows[:args.max_train_samples]
         print(f"memorization test: capped train set to {len(train_rows)} samples")
+
+    if args.max_val_samples and len(val_rows) > args.max_val_samples:
+        val_rows = val_rows[:args.max_val_samples]
+        print(f"memorization test: capped val set to {len(val_rows)} samples")
+        test_rows = []  # skip clint test too when capping val
 
     train_ds = CornerDataset(train_rows, data_dir, augment=not args.no_augment, fast_data_dir=fast_data_dir)
     val_ds   = CornerDataset(val_rows,   data_dir, augment=False, fast_data_dir=fast_data_dir)
@@ -640,6 +646,8 @@ def run(args: argparse.Namespace) -> None:
     last_ckpt = results_dir / "last.pt"
 
     start_epoch = 1
+    best_test_iou = 0.0
+    best_ckpt = results_dir / "best.pt"
 
     # Auto-resume from last.pt unless --rebuild
     if not args.rebuild and last_ckpt.exists():
@@ -655,7 +663,8 @@ def run(args: argparse.Namespace) -> None:
             else:
                 pg["lr"] = args.lr
         start_epoch = int(ckpt.get("epoch", 0)) + 1
-        print(f"resuming from epoch {start_epoch - 1}")
+        best_test_iou = float(ckpt.get("best_test_iou", 0.0))
+        print(f"resuming from epoch {start_epoch - 1}  (best_test_iou so far: {best_test_iou:.4f})")
 
     end_epoch = start_epoch + args.epochs - 1
     total_steps = (end_epoch - start_epoch + 1) * len(train_dl)
@@ -741,11 +750,20 @@ def run(args: argparse.Namespace) -> None:
 
                 out = model(images)
                 pred_corners, pred_presence = out[0], out[1]
-                pred_heatmaps = out[2] if len(out) == 3 else None
-                loss = detection_loss(
-                    pred_corners, pred_presence, pred_heatmaps, corners, presence,
-                    args.lambda_corners, args.lambda_heatmap,
-                )
+                if args.arch == "simcc":
+                    coord_logits = out[2]
+                    val_mask = presence.bool()
+                    pres_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                        pred_presence, presence,
+                    )
+                    coord_loss = simcc_coord_loss(coord_logits, corners, val_mask)
+                    loss = pres_loss + args.lambda_corners * coord_loss
+                else:
+                    pred_heatmaps = out[2] if len(out) == 3 else None
+                    loss = detection_loss(
+                        pred_corners, pred_presence, pred_heatmaps, corners, presence,
+                        args.lambda_corners, args.lambda_heatmap,
+                    )
                 val_loss_sum += loss.item() * images.shape[0]
                 n_val        += images.shape[0]
 
@@ -821,6 +839,8 @@ def run(args: argparse.Namespace) -> None:
             f"lr={cur_lr:.2e}"
         )
 
+        if test_iou is not None and test_iou > best_test_iou:
+            best_test_iou = test_iou
         ckpt = {
             "epoch": epoch,
             "arch": args.arch,
@@ -828,11 +848,15 @@ def run(args: argparse.Namespace) -> None:
             "model": model.state_dict(),
             "optimizer": optim.state_dict(),
             "val_loss": val_loss,
+            "best_test_iou": best_test_iou,
         }
         torch.save(ckpt, last_ckpt)
         saved_epoch_ckpt = args.checkpoint_every > 0 and epoch % args.checkpoint_every == 0
         if saved_epoch_ckpt:
             torch.save(ckpt, results_dir / f"epoch_{epoch:04d}.pt")
+        if test_iou is not None and test_iou >= best_test_iou:
+            torch.save(ckpt, best_ckpt)
+            print(f"  → new best test_iou={test_iou:.4f}, saved best.pt")
 
         _append_history_row(
             history_csv, run_name, epoch, args,
@@ -890,6 +914,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cap training set to N samples (for memorization test). Default: no cap.",
     )
     p.add_argument(
+        "--max-val-samples", type=int, default=None,
+        help="Cap val set to N samples (for memorization test). Also skips clint test. Default: no cap.",
+    )
+    p.add_argument(
         "--no-augment", action="store_true", default=False,
         help="Disable training augmentation (for memorization test).",
     )
@@ -897,6 +925,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-phash-dist", type=int, default=20,
         help="Exclude packopening frames with pHash distance > this threshold (default: 20). "
              "Filters ~11%% of frames where SIFT may have matched the wrong card.",
+    )
+    p.add_argument(
+        "--min-phash-dist", type=int, default=0,
+        help="Exclude packopening frames with pHash distance < this threshold (default: 0). "
+             "Filters reference-image overlays where SIFT matched a card displayed on-screen.",
     )
     p.add_argument(
         "--clint-corners-csv", type=Path,
