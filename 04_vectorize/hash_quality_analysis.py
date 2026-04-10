@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import re
 import sqlite3
 import sys
@@ -54,6 +55,7 @@ MANIFEST_PATH = DATA_DIR / "mobilevit_xxs" / "artwork_id_manifest.csv"
 SCRYFALL_DB   = FAST_DATA_DIR / "catalog" / "scryfall" / "cards.db"
 
 PHASH_CACHE_DIR = DATA_DIR / "vectors" / "phash" / "gallery_manifest_artwork_id_manifest"
+NN_CACHE_DIR    = DATA_DIR / "vectors" / "nn_analysis_cache"
 PHASH_VARIANTS = {
     "pHash 8×8 (64-bit)":    ("phash_8x8_64bit_gallery.npz",    8),
     "pHash 16×16 (256-bit)": ("phash_16x16_256bit_gallery.npz", 16),
@@ -75,6 +77,68 @@ _POPCOUNT_U8 = (
     .sum(axis=1)
     .astype(np.uint8)
 )
+
+# ---------------------------------------------------------------------------
+# NN result cache
+# ---------------------------------------------------------------------------
+
+def _file_fingerprint(*paths: Path) -> str:
+    """Stable fingerprint from the mtime + size of one or more files."""
+    h = hashlib.sha1()
+    for p in paths:
+        try:
+            st = p.stat()
+            h.update(str(p).encode())
+            h.update(str(st.st_mtime).encode())
+            h.update(str(st.st_size).encode())
+        except FileNotFoundError:
+            h.update(b"missing")
+    return h.hexdigest()
+
+
+def save_nn_cache(
+    cache_path: Path,
+    fingerprint: str,
+    nn_any_dist:  np.ndarray,
+    nn_any_idx:   np.ndarray,
+    nn_diff_dist: np.ndarray,
+    nn_diff_idx:  np.ndarray,
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        cache_path,
+        fingerprint=np.array([fingerprint]),
+        nn_any_dist=nn_any_dist,
+        nn_any_idx=nn_any_idx,
+        nn_diff_dist=nn_diff_dist,
+        nn_diff_idx=nn_diff_idx,
+    )
+    print(f"  NN cache saved → {cache_path}")
+
+
+def load_nn_cache(
+    cache_path: Path,
+    expected_fp: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Return cached arrays if fingerprint matches, else None."""
+    if not cache_path.exists():
+        return None
+    try:
+        data = np.load(cache_path, allow_pickle=False)
+        if str(data["fingerprint"][0]) != expected_fp:
+            print(f"  NN cache stale (source changed) → {cache_path}")
+            return None
+        print(f"  NN cache hit → {cache_path}")
+        return (
+            data["nn_any_dist"],
+            data["nn_any_idx"],
+            data["nn_diff_dist"],
+            data["nn_diff_idx"],
+        )
+    except Exception as e:
+        print(f"  NN cache unreadable ({e}) → recomputing")
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -330,6 +394,8 @@ def analyze_phash_variant(
     top_n: int,
     subsample: int | None,
     lines: list[str],
+    nn_cache_path: Path | None = None,
+    rebuild_nn_cache: bool = False,
 ) -> None:
     lines.append(f"\n{'='*70}")
     lines.append(f"  {label}")
@@ -370,9 +436,23 @@ def analyze_phash_variant(
     lines.append(f"  Gallery: {n:,} cards | {n_illust:,} unique illustration_ids")
     lines.append(f"  Hash size: {hash_size}×{hash_size} = {max_dist} bits")
 
-    nn_any_dist, nn_any_idx, nn_diff_dist, nn_diff_idx = nn_analysis_hamming(
-        vectors, i_ids, desc=f"  {label[:25]}"
-    )
+    # Try NN cache (only when not subsampling — subsampled runs are exploratory)
+    cached = None
+    nn_fp = _file_fingerprint(npz_path, MANIFEST_PATH)
+    if nn_cache_path is not None and subsample is None:
+        if rebuild_nn_cache:
+            print(f"  Rebuilding NN cache for {label}")
+        else:
+            cached = load_nn_cache(nn_cache_path, nn_fp)
+
+    if cached is not None:
+        nn_any_dist, nn_any_idx, nn_diff_dist, nn_diff_idx = cached
+    else:
+        nn_any_dist, nn_any_idx, nn_diff_dist, nn_diff_idx = nn_analysis_hamming(
+            vectors, i_ids, desc=f"  {label[:25]}"
+        )
+        if nn_cache_path is not None and subsample is None:
+            save_nn_cache(nn_cache_path, nn_fp, nn_any_dist, nn_any_idx, nn_diff_dist, nn_diff_idx)
 
     # NN purity
     nn_same = np.array([i_ids[nn_any_idx[i]] == i_ids[i] for i in range(n)])
@@ -419,6 +499,8 @@ def analyze_neural_variant(
     top_n: int,
     subsample: int | None,
     lines: list[str],
+    nn_cache_path: Path | None = None,
+    rebuild_nn_cache: bool = False,
 ) -> None:
     lines.append(f"\n{'='*70}")
     lines.append(f"  {label}")
@@ -466,9 +548,23 @@ def analyze_neural_variant(
         lines.append(f"  (subsampled to {subsample} cards)")
         n = subsample
 
-    nn_any_sim, nn_any_idx, nn_diff_sim, nn_diff_idx = nn_analysis_cosine(
-        vectors, illust_ids, desc=f"  {label[:25]}"
-    )
+    # Try NN cache (only when not subsampling)
+    cached = None
+    nn_fp = _file_fingerprint(npz_path)
+    if nn_cache_path is not None and subsample is None:
+        if rebuild_nn_cache:
+            print(f"  Rebuilding NN cache for {label}")
+        else:
+            cached = load_nn_cache(nn_cache_path, nn_fp)
+
+    if cached is not None:
+        nn_any_sim, nn_any_idx, nn_diff_sim, nn_diff_idx = cached
+    else:
+        nn_any_sim, nn_any_idx, nn_diff_sim, nn_diff_idx = nn_analysis_cosine(
+            vectors, illust_ids, desc=f"  {label[:25]}"
+        )
+        if nn_cache_path is not None and subsample is None:
+            save_nn_cache(nn_cache_path, nn_fp, nn_any_sim, nn_any_idx, nn_diff_sim, nn_diff_idx)
 
     # NN purity
     nn_same = np.array([illust_ids[nn_any_idx[i]] == illust_ids[i] for i in range(n)])
@@ -513,6 +609,8 @@ def main() -> None:
                         help="Analyse a random subsample of N cards per variant (for speed)")
     parser.add_argument("--skip-neural", action="store_true",
                         help="Skip the neural embedding variant (faster)")
+    parser.add_argument("--rebuild-nn-cache", action="store_true",
+                        help="Ignore existing NN result cache and recompute from scratch")
     parser.add_argument("--seed", type=int, default=42,
                         help="RNG seed for subsampling (default: 42)")
     args = parser.parse_args()
@@ -536,6 +634,11 @@ def main() -> None:
     print(f"  {len(card_ids_mf):,} rows, {len(set(illust_ids_mf)):,} unique illustration_ids")
 
     # pHash variants
+    phash_cache_names = {
+        "pHash 8×8 (64-bit)":    "phash_8x8.npz",
+        "pHash 16×16 (256-bit)": "phash_16x16.npz",
+        "pHash 32×32 (1024-bit)":"phash_32x32.npz",
+    }
     for label, (fname, hash_size) in PHASH_VARIANTS.items():
         npz_path = PHASH_CACHE_DIR / fname
         if not npz_path.exists():
@@ -547,6 +650,8 @@ def main() -> None:
             top_n=args.top_confounders,
             subsample=args.subsample,
             lines=lines,
+            nn_cache_path=NN_CACHE_DIR / phash_cache_names[label],
+            rebuild_nn_cache=args.rebuild_nn_cache,
         )
 
     # Neural variant
@@ -564,6 +669,8 @@ def main() -> None:
                 top_n=args.top_confounders,
                 subsample=args.subsample,
                 lines=lines,
+                nn_cache_path=NN_CACHE_DIR / "neural_e15.npz",
+                rebuild_nn_cache=args.rebuild_nn_cache,
             )
 
     report = "\n".join(lines)
