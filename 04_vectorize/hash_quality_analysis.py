@@ -144,9 +144,25 @@ def load_nn_cache(
 # Data loading
 # ---------------------------------------------------------------------------
 
-def scryfall_url(card_id: str, set_code: str = "", collector_number: str = "") -> str:
-    """Return the most direct Scryfall page URL for a card."""
+def name_to_slug(name: str) -> str:
+    """Convert a card name to the slug used in Scryfall URLs.
+
+    e.g. "The Raven's Warning" → "the-ravens-warning"
+         "Fire // Ice"         → "fire-ice"
+    """
+    slug = name.lower()
+    slug = re.sub(r"['\",.:!?]", "", slug)       # strip punctuation
+    slug = re.sub(r"\s*//\s*", "-", slug)         # split card separator
+    slug = re.sub(r"[^a-z0-9\-]", "-", slug)      # everything else → hyphen
+    slug = re.sub(r"-+", "-", slug)               # collapse runs
+    return slug.strip("-")
+
+
+def scryfall_url(card_id: str, set_code: str = "", collector_number: str = "", card_name: str = "") -> str:
+    """Return the canonical Scryfall card page URL."""
     if set_code and collector_number:
+        if card_name:
+            return f"https://scryfall.com/card/{set_code}/{collector_number}/{name_to_slug(card_name)}"
         return f"https://scryfall.com/card/{set_code}/{collector_number}"
     return f"https://scryfall.com/search?q=id%3A{card_id}"
 
@@ -363,12 +379,12 @@ def make_confounders_table(
             "card_a":    card_names[i],
             "card_id_a": card_ids[i],
             "set_a":     set_codes[i],
-            "url_a":     scryfall_url(card_ids[i], set_codes[i], cnum_a),
+            "url_a":     scryfall_url(card_ids[i], set_codes[i], cnum_a, card_names[i]),
             "illust_a":  illust_ids[i][:8],
             "card_b":    card_names[j],
             "card_id_b": card_ids[j],
             "set_b":     set_codes[j],
-            "url_b":     scryfall_url(card_ids[j], set_codes[j], cnum_b),
+            "url_b":     scryfall_url(card_ids[j], set_codes[j], cnum_b, card_names[j]),
             "illust_b":  illust_ids[j][:8],
         })
     return rows
@@ -407,6 +423,7 @@ def analyze_phash_variant(
     lines: list[str],
     nn_cache_path: Path | None = None,
     rebuild_nn_cache: bool = False,
+    cnum_map: dict[str, str] | None = None,
 ) -> None:
     lines.append(f"\n{'='*70}")
     lines.append(f"  {label}")
@@ -495,7 +512,8 @@ def analyze_phash_variant(
     # Confounders — all different-artwork pairs
     lines.append(f"\n#### Top-{top_n} confounders — different artwork (includes same-name reprints)\n")
     confounders = make_confounders_table(
-        nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, s_codes, top_n, mode="hamming"
+        nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, s_codes, top_n,
+        mode="hamming", cnum_map=cnum_map,
     )
     print_confounders_table(confounders, mode="hamming", lines=lines)
 
@@ -503,7 +521,7 @@ def analyze_phash_variant(
     lines.append(f"\n#### Top-{top_n} confounders — different artwork AND different name\n")
     strict = make_confounders_table(
         nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, s_codes, top_n,
-        mode="hamming", exclude_same_name=True,
+        mode="hamming", cnum_map=cnum_map, exclude_same_name=True,
     )
     print_confounders_table(strict, mode="hamming", lines=lines)
 
@@ -654,10 +672,14 @@ def main() -> None:
     )
     lines.append("")
 
-    # Load manifest labels for pHash variants
+    # Load manifest labels and Scryfall catalog (needed by all variants for URLs)
     print("Loading manifest...")
     card_ids_mf, illust_ids_mf, card_names_mf, set_codes_mf = load_manifest()
     print(f"  {len(card_ids_mf):,} rows, {len(set(illust_ids_mf)):,} unique illustration_ids")
+
+    print("Loading Scryfall catalog...")
+    illust_map, name_map, set_map, cnum_map = build_cardid_to_illust_map_from_db()
+    print(f"  {len(illust_map):,} cards in catalog")
 
     # pHash variants
     phash_cache_names = {
@@ -678,6 +700,7 @@ def main() -> None:
             lines=lines,
             nn_cache_path=NN_CACHE_DIR / phash_cache_names[label],
             rebuild_nn_cache=args.rebuild_nn_cache,
+            cnum_map=cnum_map,
         )
 
     # Neural variant
@@ -685,9 +708,6 @@ def main() -> None:
         if not NEURAL_CACHE.exists():
             lines.append(f"\n[SKIP] Neural e15 — cache not found: {NEURAL_CACHE}")
         else:
-            print("Loading Scryfall catalog for illustration_id lookup...")
-            illust_map, name_map, set_map, cnum_map = build_cardid_to_illust_map_from_db()
-            print(f"  {len(illust_map):,} cards in catalog")
             analyze_neural_variant(
                 "Neural ArcFace e15 (128-d cosine, 108k gallery)",
                 NEURAL_CACHE,
