@@ -80,15 +80,23 @@ _POPCOUNT_U8 = (
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_manifest() -> tuple[list[str], list[str], list[str]]:
-    """Returns (card_ids, illustration_ids, card_names) aligned to manifest rows."""
-    card_ids, illust_ids, card_names = [], [], []
+def scryfall_url(card_id: str, set_code: str = "", collector_number: str = "") -> str:
+    """Return the most direct Scryfall page URL for a card."""
+    if set_code and collector_number:
+        return f"https://scryfall.com/card/{set_code}/{collector_number}"
+    return f"https://scryfall.com/search?q=id%3A{card_id}"
+
+
+def load_manifest() -> tuple[list[str], list[str], list[str], list[str]]:
+    """Returns (card_ids, illustration_ids, card_names, set_codes) aligned to manifest rows."""
+    card_ids, illust_ids, card_names, set_codes = [], [], [], []
     with open(MANIFEST_PATH, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             card_ids.append(row["card_id"].lower())
             illust_ids.append(row["illustration_id"].lower())
             card_names.append(row["card_name"])
-    return card_ids, illust_ids, card_names
+            set_codes.append(row.get("set_code", "").lower())
+    return card_ids, illust_ids, card_names, set_codes
 
 
 def load_phash_cache(npz_path: Path) -> np.ndarray:
@@ -105,14 +113,18 @@ def load_neural_cache(npz_path: Path) -> tuple[np.ndarray, list[str]]:
     return embeddings, [str(p) for p in paths]
 
 
-def build_cardid_to_illust_map_from_db() -> tuple[dict[str, str], dict[str, str]]:
-    """Returns (card_id → illustration_id, card_id → name) from Scryfall SQLite."""
+def build_cardid_to_illust_map_from_db() -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    """Returns (illust_map, name_map, set_map, cnum_map) from Scryfall SQLite."""
     conn = sqlite3.connect(SCRYFALL_DB)
-    rows = conn.execute("SELECT id, illustration_id, name FROM cards").fetchall()
+    rows = conn.execute(
+        "SELECT id, illustration_id, name, set_code, collector_number FROM cards"
+    ).fetchall()
     conn.close()
     illust_map = {r[0].lower(): (r[1] or "").lower() for r in rows}
-    name_map   = {r[0].lower(): (r[2] or "") for r in rows}
-    return illust_map, name_map
+    name_map   = {r[0].lower(): (r[2] or "")         for r in rows}
+    set_map    = {r[0].lower(): (r[3] or "").lower()  for r in rows}
+    cnum_map   = {r[0].lower(): (r[4] or "")          for r in rows}
+    return illust_map, name_map, set_map, cnum_map
 
 
 # ---------------------------------------------------------------------------
@@ -241,8 +253,10 @@ def make_confounders_table(
     card_ids:     list[str],
     illust_ids:   list[str],
     card_names:   list[str],
+    set_codes:    list[str],
     top_n:        int,
     mode:         str,  # "hamming" or "cosine"
+    cnum_map:     dict[str, str] | None = None,
 ) -> list[dict]:
     """
     Return top_n worst confounders: cards whose nearest different-artwork
@@ -251,13 +265,15 @@ def make_confounders_table(
     # For hamming, smallest distance = worst confounder
     # For cosine, largest similarity = worst confounder
     if mode == "hamming":
-        order = np.argsort(nn_diff_dist)[:top_n]
+        order = np.argsort(nn_diff_dist)[:top_n * 2]  # oversample to dedupe pairs
     else:
-        order = np.argsort(-nn_diff_dist)[:top_n]   # nn_diff_dist stores similarity here
+        order = np.argsort(-nn_diff_dist)[:top_n * 2]
 
     rows = []
     seen_pairs: set[frozenset] = set()
     for i in order:
+        if len(rows) >= top_n:
+            break
         j = int(nn_diff_idx[i])
         if j < 0:
             continue
@@ -265,28 +281,41 @@ def make_confounders_table(
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
+        cnum_a = (cnum_map or {}).get(card_ids[i], "")
+        cnum_b = (cnum_map or {}).get(card_ids[j], "")
         rows.append({
-            "dist":       float(nn_diff_dist[i]),
-            "card_a":     card_names[i],
-            "card_id_a":  card_ids[i],
-            "illust_a":   illust_ids[i][:8],
-            "card_b":     card_names[j],
-            "card_id_b":  card_ids[j],
-            "illust_b":   illust_ids[j][:8],
+            "dist":      float(nn_diff_dist[i]),
+            "card_a":    card_names[i],
+            "card_id_a": card_ids[i],
+            "set_a":     set_codes[i],
+            "url_a":     scryfall_url(card_ids[i], set_codes[i], cnum_a),
+            "illust_a":  illust_ids[i][:8],
+            "card_b":    card_names[j],
+            "card_id_b": card_ids[j],
+            "set_b":     set_codes[j],
+            "url_b":     scryfall_url(card_ids[j], set_codes[j], cnum_b),
+            "illust_b":  illust_ids[j][:8],
         })
     return rows
 
 
 def print_confounders_table(rows: list[dict], mode: str, lines: list[str]) -> None:
-    dist_label = "Hamming" if mode == "hamming" else "Cosine sim"
-    header = f"  {'Score':>10}  {'Card A':<30}  {'Card B':<30}  {'Illust A':<10}  {'Illust B':<10}"
-    lines.append(header)
-    lines.append("  " + "-" * (len(header) - 2))
+    """Emit a GitHub-Flavored Markdown table with clickable Scryfall links."""
+    score_hdr = "Hamming dist" if mode == "hamming" else "Cosine sim"
+    lines.append(
+        f"| {score_hdr} | Card A (set) | Card B (set) | Illust A | Illust B |"
+    )
+    lines.append("| ---: | --- | --- | --- | --- |")
     for r in rows:
         score_str = f"{int(r['dist'])}" if mode == "hamming" else f"{r['dist']:.4f}"
+        name_a = r["card_a"].replace("|", "\\|")
+        name_b = r["card_b"].replace("|", "\\|")
+        set_a  = f" ({r['set_a']})" if r["set_a"] else ""
+        set_b  = f" ({r['set_b']})" if r["set_b"] else ""
+        link_a = f"[{name_a}{set_a}]({r['url_a']})"
+        link_b = f"[{name_b}{set_b}]({r['url_b']})"
         lines.append(
-            f"  {score_str:>10}  {r['card_a'][:30]:<30}  {r['card_b'][:30]:<30}"
-            f"  {r['illust_a']:<10}  {r['illust_b']:<10}"
+            f"| {score_str} | {link_a} | {link_b} | {r['illust_a']} | {r['illust_b']} |"
         )
 
 
@@ -297,6 +326,7 @@ def analyze_phash_variant(
     card_ids:   list[str],
     illust_ids: list[str],
     card_names: list[str],
+    set_codes:  list[str],
     top_n: int,
     subsample: int | None,
     lines: list[str],
@@ -319,8 +349,9 @@ def analyze_phash_variant(
         c_ids     = card_ids[:n]
         i_ids     = illust_ids[:n]
         c_names   = card_names[:n]
+        s_codes   = set_codes[:n]
     else:
-        c_ids, i_ids, c_names = card_ids, illust_ids, card_names
+        c_ids, i_ids, c_names, s_codes = card_ids, illust_ids, card_names, set_codes
         n = n_total
 
     # Optional subsample
@@ -331,6 +362,7 @@ def analyze_phash_variant(
         c_ids   = [c_ids[i]   for i in idx]
         i_ids   = [i_ids[i]   for i in idx]
         c_names = [c_names[i] for i in idx]
+        s_codes = [s_codes[i] for i in idx]
         lines.append(f"  (subsampled to {subsample} cards)")
         n = subsample
 
@@ -370,9 +402,9 @@ def analyze_phash_variant(
         lines.append(f"  Overlap: {pct_overlap:.1f}% of diff-art NNs ≤ median same-art dist ({med_intra:.0f} bits)")
 
     # Confounders
-    lines.append(f"\n  Top-{top_n} confounders (different artwork, closest in hash space):")
+    lines.append(f"\n#### Top-{top_n} confounders (different artwork, closest in hash space)\n")
     confounders = make_confounders_table(
-        nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, top_n, mode="hamming"
+        nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, s_codes, top_n, mode="hamming"
     )
     print_confounders_table(confounders, mode="hamming", lines=lines)
 
@@ -382,6 +414,8 @@ def analyze_neural_variant(
     npz_path: Path,
     illust_map:  dict[str, str],
     name_map:    dict[str, str],
+    set_map:     dict[str, str],
+    cnum_map:    dict[str, str],
     top_n: int,
     subsample: int | None,
     lines: list[str],
@@ -393,20 +427,20 @@ def analyze_neural_variant(
     vectors, paths = load_neural_cache(npz_path)
     n_total = len(vectors)
 
-    # Join paths → card_id → illustration_id
+    # Join paths → card_id → illustration_id / set_code / etc.
     card_ids   = []
     illust_ids = []
     card_names = []
+    set_codes  = []
     valid_mask = []
     for p in paths:
         m = UUID_RE.search(p)
         if m:
             cid = m.group(0).lower()
-            iid = illust_map.get(cid, "")
-            nm  = name_map.get(cid, cid[:8])
             card_ids.append(cid)
-            illust_ids.append(iid)
-            card_names.append(nm)
+            illust_ids.append(illust_map.get(cid, ""))
+            card_names.append(name_map.get(cid, cid[:8]))
+            set_codes.append(set_map.get(cid, ""))
             valid_mask.append(True)
         else:
             valid_mask.append(False)
@@ -428,6 +462,7 @@ def analyze_neural_variant(
         card_ids   = [card_ids[i]   for i in idx]
         illust_ids = [illust_ids[i] for i in idx]
         card_names = [card_names[i] for i in idx]
+        set_codes  = [set_codes[i]  for i in idx]
         lines.append(f"  (subsampled to {subsample} cards)")
         n = subsample
 
@@ -456,9 +491,10 @@ def analyze_neural_variant(
         pct_overlap = float((nn_diff_sim >= med_intra).mean()) * 100
         lines.append(f"  Overlap: {pct_overlap:.1f}% of diff-art NNs ≥ median same-art sim ({med_intra:.4f})")
 
-    lines.append(f"\n  Top-{top_n} confounders (different artwork, most similar in embedding space):")
+    lines.append(f"\n#### Top-{top_n} confounders (different artwork, most similar in embedding space)\n")
     confounders = make_confounders_table(
-        nn_diff_sim, nn_diff_idx, card_ids, illust_ids, card_names, top_n, mode="cosine"
+        nn_diff_sim, nn_diff_idx, card_ids, illust_ids, card_names, set_codes, top_n,
+        mode="cosine", cnum_map=cnum_map,
     )
     print_confounders_table(confounders, mode="cosine", lines=lines)
 
@@ -496,7 +532,7 @@ def main() -> None:
 
     # Load manifest labels for pHash variants
     print("Loading manifest...")
-    card_ids_mf, illust_ids_mf, card_names_mf = load_manifest()
+    card_ids_mf, illust_ids_mf, card_names_mf, set_codes_mf = load_manifest()
     print(f"  {len(card_ids_mf):,} rows, {len(set(illust_ids_mf)):,} unique illustration_ids")
 
     # pHash variants
@@ -507,7 +543,7 @@ def main() -> None:
             continue
         analyze_phash_variant(
             label, npz_path, hash_size,
-            card_ids_mf, illust_ids_mf, card_names_mf,
+            card_ids_mf, illust_ids_mf, card_names_mf, set_codes_mf,
             top_n=args.top_confounders,
             subsample=args.subsample,
             lines=lines,
@@ -519,12 +555,12 @@ def main() -> None:
             lines.append(f"\n[SKIP] Neural e15 — cache not found: {NEURAL_CACHE}")
         else:
             print("Loading Scryfall catalog for illustration_id lookup...")
-            illust_map, name_map = build_cardid_to_illust_map_from_db()
+            illust_map, name_map, set_map, cnum_map = build_cardid_to_illust_map_from_db()
             print(f"  {len(illust_map):,} cards in catalog")
             analyze_neural_variant(
                 "Neural ArcFace e15 (128-d cosine, 108k gallery)",
                 NEURAL_CACHE,
-                illust_map, name_map,
+                illust_map, name_map, set_map, cnum_map,
                 top_n=args.top_confounders,
                 subsample=args.subsample,
                 lines=lines,
