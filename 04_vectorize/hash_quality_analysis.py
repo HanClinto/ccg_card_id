@@ -321,17 +321,26 @@ def make_confounders_table(
     top_n:        int,
     mode:         str,  # "hamming" or "cosine"
     cnum_map:     dict[str, str] | None = None,
+    exclude_same_name: bool = False,
 ) -> list[dict]:
     """
     Return top_n worst confounders: cards whose nearest different-artwork
     neighbour is closest in hash space.
+
+    exclude_same_name: if True, also skip pairs where both cards share the same
+    card name (i.e. same card reprinted with different art is already excluded
+    by illustration_id; this further excludes same-name / different-art pairs
+    such as basic land variants and alternate-art printings).
     """
-    # For hamming, smallest distance = worst confounder
-    # For cosine, largest similarity = worst confounder
+    # For hamming, smallest distance = worst confounder.
+    # For cosine, largest similarity = worst confounder.
+    # Scan deeper into the sorted list when filtering by name to avoid running
+    # out of candidates (same-name pairs can be plentiful for basics etc.).
+    scan = min(top_n * 20, len(nn_diff_dist)) if exclude_same_name else top_n * 2
     if mode == "hamming":
-        order = np.argsort(nn_diff_dist)[:top_n * 2]  # oversample to dedupe pairs
+        order = np.argsort(nn_diff_dist)[:scan]
     else:
-        order = np.argsort(-nn_diff_dist)[:top_n * 2]
+        order = np.argsort(-nn_diff_dist)[:scan]
 
     rows = []
     seen_pairs: set[frozenset] = set()
@@ -340,6 +349,8 @@ def make_confounders_table(
             break
         j = int(nn_diff_idx[i])
         if j < 0:
+            continue
+        if exclude_same_name and card_names[i].lower() == card_names[j].lower():
             continue
         pair = frozenset([i, j])
         if pair in seen_pairs:
@@ -481,12 +492,20 @@ def analyze_phash_variant(
         pct_overlap = float((nn_diff_dist <= med_intra).mean()) * 100
         lines.append(f"  Overlap: {pct_overlap:.1f}% of diff-art NNs ≤ median same-art dist ({med_intra:.0f} bits)")
 
-    # Confounders
-    lines.append(f"\n#### Top-{top_n} confounders (different artwork, closest in hash space)\n")
+    # Confounders — all different-artwork pairs
+    lines.append(f"\n#### Top-{top_n} confounders — different artwork (includes same-name reprints)\n")
     confounders = make_confounders_table(
         nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, s_codes, top_n, mode="hamming"
     )
     print_confounders_table(confounders, mode="hamming", lines=lines)
+
+    # Confounders — different artwork AND different name (the truly surprising ones)
+    lines.append(f"\n#### Top-{top_n} confounders — different artwork AND different name\n")
+    strict = make_confounders_table(
+        nn_diff_dist, nn_diff_idx, c_ids, i_ids, c_names, s_codes, top_n,
+        mode="hamming", exclude_same_name=True,
+    )
+    print_confounders_table(strict, mode="hamming", lines=lines)
 
 
 def analyze_neural_variant(
@@ -587,12 +606,19 @@ def analyze_neural_variant(
         pct_overlap = float((nn_diff_sim >= med_intra).mean()) * 100
         lines.append(f"  Overlap: {pct_overlap:.1f}% of diff-art NNs ≥ median same-art sim ({med_intra:.4f})")
 
-    lines.append(f"\n#### Top-{top_n} confounders (different artwork, most similar in embedding space)\n")
+    lines.append(f"\n#### Top-{top_n} confounders — different artwork (includes same-name reprints)\n")
     confounders = make_confounders_table(
         nn_diff_sim, nn_diff_idx, card_ids, illust_ids, card_names, set_codes, top_n,
         mode="cosine", cnum_map=cnum_map,
     )
     print_confounders_table(confounders, mode="cosine", lines=lines)
+
+    lines.append(f"\n#### Top-{top_n} confounders — different artwork AND different name\n")
+    strict = make_confounders_table(
+        nn_diff_sim, nn_diff_idx, card_ids, illust_ids, card_names, set_codes, top_n,
+        mode="cosine", cnum_map=cnum_map, exclude_same_name=True,
+    )
+    print_confounders_table(strict, mode="cosine", lines=lines)
 
 
 # ---------------------------------------------------------------------------
